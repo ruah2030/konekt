@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/env.dart';
+import '../storage/app_prefs.dart';
 import '../storage/secure_store.dart';
 import 'fake/fake_api.dart';
+import 'fake/fake_db.dart';
 import 'interceptors.dart';
 
 /// Émet un évènement quand la session ne peut plus être rafraîchie.
@@ -19,8 +21,13 @@ final sessionExpiredProvider = Provider<StreamController<void>>((ref) {
 
 final appVersionProvider = Provider<String>((ref) => '2.0.0');
 
-/// Faux backend partagé (mode `USE_FAKE_API`). Surchargé dans les tests.
-final fakeApiProvider = Provider<FakeApi>((ref) => FakeApi());
+/// Faux backend partagé (mode `USE_FAKE_API`) avec le jeu de démo. Surchargé dans les tests.
+final fakeApiProvider = Provider<FakeApi>((ref) {
+  final prefs = ref.watch(appPrefsProvider);
+  return FakeApi(
+    db: FakeDb.demo(savedPin: prefs.fakePin, onPinChanged: prefs.setFakePin),
+  );
+});
 
 final dioProvider = Provider<Dio>((ref) {
   final store = ref.watch(secureStoreProvider);

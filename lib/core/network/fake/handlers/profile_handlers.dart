@@ -23,7 +23,7 @@ void registerProfileHandlers(FakeApi api) {
     final device = db.devices.where((d) => d['id'] == r.pathParams['id']).firstOrNull;
     if (device == null) return FakeResponse.error(404, 'NOT_FOUND', 'Appareil introuvable.');
     db.devices.remove(device);
-    if (device['current'] == true) db.accessTokens.remove(r.bearer);
+    if (device['current'] == true) db.revokeAccessToken(r.bearer);
     return const FakeResponse.noContent();
   });
 

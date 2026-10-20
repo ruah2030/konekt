@@ -9,10 +9,23 @@ import 'dart:math';
 /// - OTP / code de vérification : tout code sauf `000000`
 /// - PIN existant (si [hasPin]) : `482915`
 class FakeDb {
-  FakeDb({this.cardStatus = 'ACTIVE', bool hasPin = false, this.incident = false, this.adsEnabled = true})
-    : pin = hasPin ? '482915' : null {
+  FakeDb({
+    this.cardStatus = 'ACTIVE',
+    bool hasPin = false,
+    this.incident = false,
+    this.adsEnabled = true,
+    this.persistentSession = false,
+    this.onPinChanged,
+    bool richHistory = false,
+  }) : _pin = hasPin ? '482915' : null {
     _seed();
+    if (richHistory) _seedHistory();
   }
+
+  /// Jeu de démo utilisé par l'app en mode faux backend : historique d'un mois,
+  /// session et code secret conservés d'un lancement à l'autre.
+  factory FakeDb.demo({String? savedPin, void Function(String? pin)? onPinChanged}) =>
+      FakeDb(persistentSession: true, onPinChanged: onPinChanged, richHistory: true).._pin = savedPin;
 
   final _rnd = Random();
   String id(String prefix, [int len = 4]) {
@@ -41,7 +54,28 @@ class FakeDb {
   final refreshTokens = <String>{};
   int otpSendsThisHour = 0;
 
-  bool isValidAccessToken(String? t) => t != null && accessTokens.contains(t);
+  /// En démo, un jeton émis lors d'un lancement précédent reste valide (l'état en mémoire
+  /// est perdu au redémarrage, pas la session stockée sur le téléphone).
+  final bool persistentSession;
+  final _revokedTokens = <String>{};
+  bool _allRevoked = false;
+
+  bool isValidAccessToken(String? t) =>
+      t != null &&
+      (accessTokens.contains(t) ||
+          (persistentSession && !_allRevoked && t.startsWith('at_') && !_revokedTokens.contains(t)));
+
+  /// Consomme un refresh token (rotation). Renvoie faux s'il est inconnu ou révoqué.
+  bool consumeRefreshToken(String t) {
+    if (refreshTokens.remove(t)) return true;
+    return persistentSession && !_allRevoked && t.startsWith('rt_') && _revokedTokens.add(t);
+  }
+
+  void revokeAccessToken(String? t) {
+    if (t == null) return;
+    accessTokens.remove(t);
+    _revokedTokens.add(t);
+  }
 
   ({String access, String refresh}) issueTokens() {
     final a = 'at_${id('', 24)}', r = 'rt_${id('', 24)}';
@@ -53,10 +87,19 @@ class FakeDb {
   void revokeAll() {
     accessTokens.clear();
     refreshTokens.clear();
+    _allRevoked = true;
   }
 
   // ---------------- PIN ----------------
-  String? pin;
+  String? _pin;
+  final void Function(String? pin)? onPinChanged;
+
+  String? get pin => _pin;
+  set pin(String? value) {
+    _pin = value;
+    onPinChanged?.call(value);
+  }
+
   int pinTries = 5;
   DateTime? pinLockedUntil;
 
@@ -282,5 +325,65 @@ class FakeDb {
         'lastSeenAt': hoursAgo(400).toIso8601String(),
       },
     ]);
+  }
+
+  /// Un mois d'activité supplémentaire (pagination de l'historique, démo).
+  void _seedHistory() {
+    const samples = [
+      ('Crédit MTN', 'airtime', -1000),
+      ('Forfait internet 5 Go', 'data', -3000),
+      ('SBEE · Électricité prépayée', 'elec', -10125),
+      ('Envoi à Koffi Agbo', 'send', -20440),
+      ('NETFLIX.COM · Paiement en ligne', 'card', -5200),
+      ('Recharge Moov Money', 'topup', 50000),
+      ('Retrait vers MTN MoMo', 'payout', -15330),
+      ('Retrait au guichet', 'cash', -10100),
+      ('AMAZON · Paiement en ligne', 'card', -18750),
+      ('Recharge MTN MoMo', 'topup', 25000),
+    ];
+    var balance = transactions.last['balanceAfter'] as int;
+    var hours = 110.0;
+    for (var i = 0; i < 22; i++) {
+      final (label, kind, amount) = samples[i % samples.length];
+      transactions.add({
+        'id': 'tx_h$i',
+        'description': label,
+        'kind': kind,
+        'amount': amount,
+        'balanceAfter': balance,
+        'createdAt': hoursAgo(hours).toIso8601String(),
+      });
+      balance -= amount;
+      hours += 26 + (i * 7) % 19;
+    }
+    const opSamples = [
+      ('transfer', 'Envoyer vers une carte', 20000, 440, 'Koffi Agbo · •••• 1207', 'SUCCESS'),
+      ('elec', 'Électricité prépayée', 10000, 125, 'Compteur 45012345678', 'SUCCESS'),
+      ('payout', 'Retirer vers Mobile Money', 15000, 330, 'MTN MoMo · +229 01 96 •• •• 62', 'SUCCESS'),
+      ('airtime', 'Crédit téléphone', 1000, 0, '+229 01 97 00 11 22', 'FAILED'),
+      ('topup', 'Recharger ma carte', 50000, 500, 'Moov Money · +229 01 95 •• •• 40', 'SUCCESS'),
+      ('cash', 'Retrait au guichet', 10000, 100, null, 'SUCCESS'),
+      ('data', 'Forfait internet', 3000, 0, '+229 01 96 66 62 62', 'SUCCESS'),
+    ];
+    hours = 110;
+    for (var i = 0; i < 14; i++) {
+      final (service, title, amount, fee, benef, status) = opSamples[i % opSamples.length];
+      operations.add({
+        'id': 'op_H${i.toString().padLeft(2, '0')}',
+        'service': service,
+        'title': title,
+        'status': status,
+        'step': status,
+        'amount': amount,
+        'fee': fee,
+        'total': amount + fee,
+        'direction': service == 'topup' ? 'CREDIT' : 'DEBIT',
+        'beneficiary': ?benef,
+        if (status == 'FAILED') 'reason': "L'opérateur n'a pas répondu. Votre carte n'a pas été débitée.",
+        'extra': <Map<String, dynamic>>[],
+        'createdAt': hoursAgo(hours).toIso8601String(),
+      });
+      hours += 40 + (i * 11) % 23;
+    }
   }
 }

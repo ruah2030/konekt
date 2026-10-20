@@ -9,11 +9,17 @@ Application mobile Flutter (Android / iOS) de la carte virtuelle **myCard Konekt
 
 ```bash
 flutter pub get
-flutter run --dart-define-from-file=env/dev.json      # faux backend en mémoire
-flutter run --dart-define-from-file=env/staging.json  # API de staging
+flutter run                                       # données de démo (par défaut)
+flutter run --dart-define-from-file=env/dev.json
 ```
 
-En dev, toutes les requêtes HTTP sont servies par le faux backend (`lib/core/network/fake`), qui applique les règles de la maquette.
+**Pour l'instant, l'app tourne uniquement sur des données de démo** : tous les environnements (`env/*.json`) ont
+`USE_FAKE_API=true`. Aucune requête ne sort du téléphone ; le faux backend (`lib/core/network/fake`) applique les règles
+de la maquette. Quand l'API sera prête, passer `USE_FAKE_API` à `false` dans `env/staging.json` et `env/prod.json`.
+
+Données de démo : titulaire Awa Houngbédji, carte Visa •••• (4 derniers chiffres saisis à la connexion), solde
+152 400 FCFA, un mois d'historique, 3 notifications, 3 appareils, publicités. La session et le code secret sont
+conservés entre deux lancements ; le solde et l'historique repartent de zéro à chaque redémarrage.
 
 | Écran | Valeur de test |
 |---|---|

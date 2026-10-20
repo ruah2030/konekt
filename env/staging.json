@@ -1,6 +1,6 @@
 {
   "FLAVOR": "staging",
   "API_BASE_URL": "https://api.staging.konekt.bj",
-  "USE_FAKE_API": false,
+  "USE_FAKE_API": true,
   "LOG_NETWORK": true
 }

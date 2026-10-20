@@ -16,6 +16,11 @@ class AppPrefs {
   bool get hideBalance => _p.getBool(_hideBalance) ?? false;
   Future<void> setHideBalance(bool v) => _p.setBool(_hideBalance, v);
 
+  /// Faux backend uniquement : code secret de démo conservé entre deux lancements.
+  static const _fakePin = 'fake_backend_pin';
+  String? get fakePin => _p.getString(_fakePin);
+  Future<void> setFakePin(String? pin) => pin == null ? _p.remove(_fakePin) : _p.setString(_fakePin, pin);
+
   List<String> get dismissedPromos => _p.getStringList(_dismissedPromos) ?? const [];
   Future<void> setDismissedPromos(List<String> ids) => _p.setStringList(_dismissedPromos, ids);
 }

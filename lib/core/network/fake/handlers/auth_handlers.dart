@@ -124,7 +124,7 @@ void registerAuthHandlers(FakeApi api) {
 
   api.on('POST', '/v1/auth/refresh', (r) {
     final rt = '${r.body['refreshToken']}';
-    if (!db.refreshTokens.remove(rt)) {
+    if (!db.consumeRefreshToken(rt)) {
       return FakeResponse.error(401, 'UNAUTHENTICATED', 'Votre session a expiré. Reconnectez-vous.');
     }
     final tokens = db.issueTokens();
@@ -134,7 +134,7 @@ void registerAuthHandlers(FakeApi api) {
   api.on('GET', '/v1/auth/session', (_) => FakeResponse.ok({'hasPin': db.hasPin}));
 
   api.on('POST', '/v1/auth/logout', (r) {
-    db.accessTokens.remove(r.bearer);
+    db.revokeAccessToken(r.bearer);
     return const FakeResponse.noContent();
   });
 

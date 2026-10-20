@@ -1,6 +1,6 @@
 {
   "FLAVOR": "prod",
   "API_BASE_URL": "https://api.konekt.bj",
-  "USE_FAKE_API": false,
+  "USE_FAKE_API": true,
   "LOG_NETWORK": false
 }
