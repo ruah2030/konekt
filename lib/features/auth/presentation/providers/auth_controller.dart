@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/network/dio_client.dart';
+import '../../../../core/storage/secure_store.dart';
 import '../../../account/presentation/account_providers.dart';
 import '../../data/auth_repository.dart';
 import '../../domain/auth_models.dart';
@@ -15,7 +16,9 @@ class AuthController extends Notifier<AuthState> {
 
   @override
   AuthState build() {
-    _expiredSub = ref.watch(sessionExpiredProvider).stream.listen((_) => _clearSession());
+    _expiredSub = ref.watch(sessionExpiredProvider).stream.listen((_) {
+      if (state.status != AuthStatus.unauthenticated) _clearSession();
+    });
     ref.onDispose(() => _expiredSub?.cancel());
     Future.microtask(_restore);
     return const AuthState.unknown();
@@ -59,6 +62,8 @@ class AuthController extends Notifier<AuthState> {
   void sessionEnded() => _clearSession();
 
   void _clearSession() {
+    // Les jetons locaux sont toujours effacés : un `restore()` ultérieur ne doit pas rouvrir la session.
+    unawaited(ref.read(secureStoreProvider).clearTokens());
     ref.read(loginChallengeProvider.notifier).clear();
     resetAccountState(ref);
     state = const AuthState.unauthenticated();

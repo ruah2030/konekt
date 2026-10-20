@@ -63,7 +63,16 @@ class AuthInterceptor extends QueuedInterceptor {
   Future<void> onError(DioException err, ErrorInterceptorHandler handler) async {
     final opts = err.requestOptions;
     final is401 = err.response?.statusCode == 401;
-    if (!is401 || publicPaths.contains(opts.path) || opts.extra['retried'] == true) {
+    final hadToken = opts.headers.containsKey('Authorization');
+    final body = err.response?.data;
+    final code = body is Map && body['error'] is Map ? (body['error'] as Map)['code'] : null;
+    // Un 401 métier (code ≠ UNAUTHENTICATED) ou une requête partie sans jeton
+    // (session déjà fermée) ne déclenche ni refresh ni expiration de session.
+    if (!is401 ||
+        !hadToken ||
+        (code != null && code != ErrorCodes.unauthenticated) ||
+        publicPaths.contains(opts.path) ||
+        opts.extra['retried'] == true) {
       return handler.next(err);
     }
     final refresh = await store.refreshToken;
