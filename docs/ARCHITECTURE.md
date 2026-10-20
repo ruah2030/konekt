@@ -11,10 +11,10 @@ Document de référence pour développer l'application mobile **myCard Konekt 2.
 | Sujet | Choix | Pourquoi |
 |---|---|---|
 | SDK | Flutter stable (3.x), Dart 3, Material 3 (`useMaterial3: true`) | La maquette est spécifiée en widgets M3 (NavigationBar, SegmentedButton, CarouselView, SliverAppBar.large…) |
-| Gestion d'état | **Riverpod 2** (`flutter_riverpod` + `riverpod_annotation` / `riverpod_generator`) | Injection de dépendances + état asynchrone (`AsyncValue`) + testable sans `BuildContext`. Adapté aux nombreux états chargement/erreur/expiré de l'app |
+| Gestion d'état | **Riverpod 3** (`flutter_riverpod`), sans génération de code | Injection de dépendances + état asynchrone (`AsyncValue`) + testable sans `BuildContext`. Adapté aux nombreux états chargement/erreur/expiré de l'app |
 | Navigation | **go_router** (+ `go_router_builder` optionnel) | Redirections déclaratives selon l'état d'auth (splash → invitation → login → OTP → PIN → home), `StatefulShellRoute` pour les 4 onglets |
 | HTTP | **dio** + intercepteurs | Auth (Bearer + refresh), `X-Request-Id`, `Idempotency-Key`, mapping d'erreurs, logs, retry |
-| Modèles | **freezed** + **json_serializable** | Immuabilité, `copyWith`, unions (statuts, erreurs), sérialisation |
+| Modèles | Classes immuables écrites à la main + `fromJson`, `sealed class` Dart 3 | Pas de `build_runner` : build plus simple, aucun fichier généré à maintenir |
 | Stockage sécurisé | `flutter_secure_storage` | Tokens, identifiant de session, id d'appareil |
 | Préférences | `shared_preferences` | Premier lancement, solde masqué, préférences UI |
 | Polices / icônes | `google_fonts` (Plus Jakarta Sans), `material_symbols_icons` (Rounded) | Conforme à la maquette |
@@ -25,9 +25,12 @@ Document de référence pour développer l'application mobile **myCard Konekt 2.
 | i18n / formats | `flutter_localizations` + `intl` (fr-FR) | Montants `152 400 FCFA`, dates « Hier à 14:05 » |
 | Liens externes | `url_launcher` | Actions de type `url` des promotions, support |
 | Qualité | `flutter_lints`/`very_good_analysis`, `mocktail`, `golden_toolkit` (ou `alchemist`) | Lint strict, tests unitaires/widgets/golden |
-| Environnements | `--dart-define-from-file` (`env/dev.json`, `env/staging.json`, `env/prod.json`) + flavors Android/iOS | Base URL, clés, logs selon l'environnement |
+| Environnements | `--dart-define-from-file` (`env/dev.json`, `env/staging.json`, `env/prod.json`) | Base URL, faux backend on/off, logs selon l'environnement |
+| Faux backend | `core/network/fake` : intercepteur Dio qui sert le contrat d'API en mémoire (`USE_FAKE_API=true` en dev) | Développer et tester toute l'app avant que l'API existe ; passer au vrai backend sans toucher au code des features |
 
 Alternative acceptable : **flutter_bloc** à la place de Riverpod. Ne pas mélanger les deux.
+
+Lancer l'app : `flutter run --dart-define-from-file=env/dev.json` (faux backend). Valeurs de test : voir l'en-tête de `lib/core/network/fake/fake_db.dart`.
 
 ---
 
@@ -43,8 +46,11 @@ lib/
 │   │   └── routes.dart             # Noms/chemins des routes
 │   └── bootstrap.dart              # init (Firebase, storage, ProviderScope overrides)
 ├── core/
-│   ├── config/env.dart             # baseUrl, flavor (dart-define)
+│   ├── config/env.dart             # baseUrl, flavor, USE_FAKE_API (dart-define)
+│   ├── domain/                     # entités partagées : carte, transaction, opération, notification, promo, service
+│   ├── providers/ticker.dart       # horloge 1 s pour les compte-à-rebours
 │   ├── network/
+│   │   ├── fake/                   # faux backend (FakeDb + handlers par domaine)
 │   │   ├── dio_client.dart
 │   │   ├── interceptors/
 │   │   │   ├── auth_interceptor.dart         # Bearer + refresh token + 401
@@ -68,6 +74,8 @@ lib/
 │   │   └── typography.dart         # Plus Jakarta Sans
 │   └── widgets/                    # Composants réutilisables (voir §4)
 ├── features/
+│   ├── account/         # lectures partagées : titulaire, carte, solde, mouvements, notifications, promos
+│   ├── shell/           # NavigationBar des 4 onglets
 │   ├── onboarding/      # splash, invitation, obtenir une invitation, liste d'attente
 │   ├── auth/            # login carte, OTP, session, déconnexion
 │   ├── pin/             # création / changement / réinitialisation / saisie PIN paiement
@@ -89,10 +97,10 @@ Chaque feature suit le même découpage :
 features/<feature>/
 ├── data/
 │   ├── datasources/<feature>_api.dart        # appels dio
-│   ├── dto/                                  # *_dto.dart (freezed + json)
+│   ├── dto/                                  # objets de requête/réponse (fromJson / toJson)
 │   └── repositories/<feature>_repository_impl.dart
 ├── domain/
-│   ├── entities/                             # modèles métier (freezed)
+│   ├── entities/                             # modèles métier immuables
 │   └── repositories/<feature>_repository.dart  # contrat abstrait
 └── presentation/
     ├── providers/                            # Notifiers Riverpod
@@ -125,16 +133,14 @@ Règles : `presentation` ne connaît que `domain` ; `data` implémente `domain` 
 - **Login** : validation locale (chiffres uniquement, détection de la lettre « O », 6–20 chiffres, 4 chiffres), canal `SMS | WHATSAPP | EMAIL` (WhatsApp désactivable par config).
 - **Code (écran unique, 6 modes)** : `otp`, `pinVerify`, `pinOld`, `pinNew`, `pinConfirm`, `payPin` avec un contexte `login | setup | change | reset | pay`. Modéliser comme une machine à états :
   ```dart
-  @freezed
-  sealed class CodeStep with _$CodeStep {
-    const factory CodeStep.otp({required DateTime expiresAt, required int sendsLeft}) = _Otp;
-    const factory CodeStep.pinVerify(PinFlow flow) = _PinVerify;
-    const factory CodeStep.pinOld() = _PinOld;
-    const factory CodeStep.pinNew(PinFlow flow) = _PinNew;
-    const factory CodeStep.pinConfirm(PinFlow flow, {required String firstEntry}) = _PinConfirm;
-    const factory CodeStep.payPin({required String quoteId}) = _PayPin;
-  }
+  sealed class CodeStep { const CodeStep(); }
+  final class OtpStep extends CodeStep { const OtpStep(this.expiresAt, this.sendsLeft); final DateTime expiresAt; final int sendsLeft; }
+  final class PinVerifyStep extends CodeStep { const PinVerifyStep(this.flow); final PinFlow flow; }
+  final class PinNewStep extends CodeStep { const PinNewStep(this.flow); final PinFlow flow; }
+  final class PinConfirmStep extends CodeStep { const PinConfirmStep(this.flow, this.firstEntry); final PinFlow flow; final String firstEntry; }
+  // + PinOldStep, PayPinStep(quoteId)
   ```
+  Dans l'implémentation, l'OTP, le parcours PIN (setup/change/reset) et le PIN de paiement sont trois écrans distincts qui partagent le même widget de saisie (`CodeEntryView` : PinDots + pavé numérique).
   Le premier PIN (`firstEntry`) ne quitte jamais la mémoire du notifier ; il n'est ni loggé ni persisté.
 - **Paiement** (`paymentFlowProvider`) : `form → quoting → quote(live|expired) → pin → processing(step) → receipt(success|failed|processing)`. Le devis porte `quoteId`, `expiresAt` (10 min), `checks[]`, `warnings[]`.
 - **Affichage sécurisé** : `loading → shown(expiresAt 60 s) → expired`.
@@ -315,4 +321,5 @@ Les DTO restent dans `data/`, convertis en entités `domain` (`toEntity()`). Les
 - **Unitaires** : formatteurs (montant, date relative, mm:ss), validateurs, détection PIN faible, mapping `ApiFailure`, notifiers (machine à états du code, flux de paiement, expiration devis).
 - **Widgets/golden** : chaque écran dans ses états (chargement, erreur, carte suspendue/pré-active/bloquée, pas de transaction, devis expiré…).
 - **Intégration** : parcours login → OTP → création PIN → envoi → reçu, avec un faux backend (`http_mock_adapter` ou serveur mock).
-- **CI (GitHub Actions)** : `flutter analyze`, `dart format --set-exit-if-changed`, `flutter test --coverage`, `build_runner` vérifié, build APK/IPA par flavor.
+- **CI (GitHub Actions, `.github/workflows/ci.yml`)** : `dart format --set-exit-if-changed`, `flutter analyze`, `flutter test --coverage`, build APK de dev.
+- Helper de test : `test/helpers/test_app.dart` (`TestEnv`) — faux backend sans latence, stockage en mémoire, app complète ou écran isolé.

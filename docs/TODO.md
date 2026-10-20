@@ -15,8 +15,8 @@ Découpage par lots, dans l'ordre conseillé. Voir `ARCHITECTURE.md` pour les ch
 ## Lot 1 — Socle technique
 
 - [ ] `flutter create` (org, bundle id), flavors dev/staging/prod, `--dart-define-from-file`
-- [ ] Dépendances : riverpod (+ generator), go_router, dio, freezed, json_serializable, flutter_secure_storage, shared_preferences, google_fonts, material_symbols_icons, intl, video_player, url_launcher, device_info_plus, package_info_plus
-- [ ] Lint strict (`very_good_analysis`), `build.yaml`, scripts `build_runner`
+- [ ] Dépendances : riverpod 3, go_router, dio, flutter_secure_storage, shared_preferences, google_fonts, material_symbols_icons, intl, video_player, url_launcher, device_info_plus, package_info_plus
+- [ ] Lint strict (règles additionnelles dans `analysis_options.yaml`)
 - [ ] Arborescence feature-first (`app/`, `core/`, `design_system/`, `features/`)
 - [ ] Client dio + intercepteurs (auth/refresh, X-Request-Id, X-Device-Id, Idempotency-Key, erreurs → `ApiFailure`)
 - [ ] `Result<T>` + table des messages d'erreur FR
