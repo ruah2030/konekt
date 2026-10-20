@@ -26,20 +26,22 @@ class PinDots extends StatelessWidget {
             : filled
             ? const Color(0xFFC7C9E6)
             : KColors.outlineVariant;
-        return Container(
-          key: Key('pin-dot-$i'),
-          width: 46,
-          height: 56,
-          margin: const EdgeInsets.symmetric(horizontal: 4),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: KColors.fieldFill,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: border, width: 1.5),
-          ),
-          child: Text(
-            filled ? (obscure ? '●' : value[i]) : '',
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: KColors.primary),
+        return Flexible(
+          child: Container(
+            key: Key('pin-dot-$i'),
+            constraints: const BoxConstraints(maxWidth: 46),
+            height: 56,
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: KColors.fieldFill,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: border, width: 1.5),
+            ),
+            child: Text(
+              filled ? (obscure ? '●' : value[i]) : '',
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: KColors.primary),
+            ),
           ),
         );
       }),

@@ -33,9 +33,12 @@ class InfoRowsCard extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(rows[i].label, style: t.bodyMedium?.copyWith(color: KColors.onSurfaceVariant)),
+                    Flexible(
+                      child: Text(rows[i].label, style: t.bodyMedium?.copyWith(color: KColors.onSurfaceVariant)),
+                    ),
                     const SizedBox(width: 16),
                     Expanded(
+                      flex: 2,
                       child: Text(
                         rows[i].value,
                         textAlign: TextAlign.right,
