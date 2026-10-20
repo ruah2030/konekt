@@ -1,0 +1,5 @@
+package bj.bestcash.konekt
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
