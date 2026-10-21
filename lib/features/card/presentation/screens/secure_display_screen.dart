@@ -10,11 +10,12 @@ import '../../../../core/providers/ticker.dart';
 import '../../../../core/utils/countdown.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
-import '../../domain/sensitive_card_data.dart';
+import '../../domain/card_models.dart';
 import '../providers/secure_display_controller.dart';
-import '../widgets/virtual_card_view.dart';
 
-/// « Données de ma carte » : PAN / expiration / CVV pendant 60 s, capture d'écran interdite.
+/// « Données de ma carte » (guide Partie 4 §14) : l'autorisation n'est demandée qu'au tap sur « Afficher »,
+/// la page sécurisée de l'émetteur est chargée une seule fois puis détruite à l'expiration ou à la fermeture.
+/// Captures d'écran interdites (FLAG_SECURE / masquage iOS).
 class SecureDisplayScreen extends ConsumerStatefulWidget {
   const SecureDisplayScreen({super.key});
 
@@ -52,6 +53,8 @@ class _SecureDisplayScreenState extends ConsumerState<SecureDisplayScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(secureDisplayProvider);
+    final status = ref.watch(cardStatusProvider);
+    final notifier = ref.read(secureDisplayProvider.notifier);
     return Scaffold(
       backgroundColor: _background,
       appBar: AppBar(
@@ -62,7 +65,7 @@ class _SecureDisplayScreenState extends ConsumerState<SecureDisplayScreen> {
           key: const Key('display-close'),
           tooltip: 'Fermer',
           icon: const Icon(Symbols.close_rounded),
-          onPressed: () => context.go(Routes.card),
+          onPressed: () => context.canPop() ? context.pop() : context.go(Routes.card),
         ),
         title: const Text(
           'Données de ma carte',
@@ -76,21 +79,24 @@ class _SecureDisplayScreenState extends ConsumerState<SecureDisplayScreen> {
           children: [
             const Align(alignment: Alignment.centerLeft, child: _IssuerChip()),
             const SizedBox(height: 20),
-            switch (state) {
-              SecureDisplayLoading() => const _Loading(),
-              SecureDisplayShown(:final data) => _Shown(data: data),
-              SecureDisplayExpired() => _Expired(onRetry: () => ref.read(secureDisplayProvider.notifier).open()),
-              SecureDisplayError(:final failure) => _Failure(
-                failure: failure,
-                onRetry: () => ref.read(secureDisplayProvider.notifier).open(),
-              ),
-            },
+            if (status != null && status.isTerminal)
+              _Blocked(message: status.blockedMessage)
+            else
+              switch (state) {
+                SecureDisplayIdle() => _Intro(onShow: notifier.authorize),
+                SecureDisplayLoading() => const _Loading(),
+                SecureDisplayShown() => _Shown(state: state),
+                SecureDisplayExpired() => _Expired(onRetry: notifier.authorize),
+                SecureDisplayError() => _Failure(state: state, onRetry: notifier.authorize),
+              },
           ],
         ),
       ),
     );
   }
 }
+
+const _muted = Color(0xFFB8BCE8);
 
 class _IssuerChip extends StatelessWidget {
   const _IssuerChip();
@@ -119,6 +125,45 @@ class _IssuerChip extends StatelessWidget {
   );
 }
 
+class _Intro extends StatelessWidget {
+  const _Intro({required this.onShow});
+  final VoidCallback onShow;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    key: const Key('display-intro'),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const Icon(Symbols.credit_card_rounded, size: 48, color: KColors.secondary),
+      const SizedBox(height: 16),
+      const Text(
+        'Votre numéro de carte, sa date d’expiration et son CVV s’affichent pendant une minute, '
+        'directement depuis le coffre sécurisé de l’émetteur.',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 14, color: _muted, height: 1.5),
+      ),
+      const SizedBox(height: 24),
+      FilledButton.icon(
+        key: const Key('display-show'),
+        style: FilledButton.styleFrom(
+          backgroundColor: KColors.secondary,
+          foregroundColor: KColors.primary,
+          minimumSize: const Size.fromHeight(48),
+        ),
+        onPressed: onShow,
+        icon: const Icon(Symbols.visibility_rounded),
+        label: const Text('Afficher'),
+      ),
+      const SizedBox(height: 16),
+      const Text(
+        "Ne faites pas de capture d'écran et ne communiquez jamais votre CVV.",
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12.5, color: _muted, height: 1.5),
+      ),
+    ],
+  );
+}
+
 class _Loading extends StatelessWidget {
   const _Loading();
 
@@ -132,7 +177,7 @@ class _Loading extends StatelessWidget {
         SizedBox(height: 16),
         Text(
           'Ouverture sécurisée…',
-          style: TextStyle(color: Color(0xFFB8BCE8), fontSize: 14, fontWeight: FontWeight.w600),
+          style: TextStyle(color: _muted, fontSize: 14, fontWeight: FontWeight.w600),
         ),
       ],
     ),
@@ -140,92 +185,25 @@ class _Loading extends StatelessWidget {
 }
 
 class _Shown extends ConsumerWidget {
-  const _Shown({required this.data});
-  final SensitiveCardData data;
+  const _Shown({required this.state});
+  final SecureDisplayShown state;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final now = ref.watch(nowProvider);
-    final left = data.expiresAt.difference(now);
-    final total = SensitiveCardData.validity.inMilliseconds;
-    final progress = (left.inMilliseconds / total).clamp(0.0, 1.0);
-    final holder = ref.watch(cardProvider).value?.holderName ?? '';
-    const label = TextStyle(fontSize: 12, color: Color(0xFFB8BCE8), fontWeight: FontWeight.w600);
+    final left = state.deadline.difference(now);
+    final total = state.authorization.expiresInSeconds * 1000;
+    final progress = total <= 0 ? 0.0 : (left.inMilliseconds / total).clamp(0.0, 1.0);
+    final viewBuilder = ref.watch(cardDisplayViewBuilderProvider);
 
     return Column(
       key: const Key('display-shown'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          padding: const EdgeInsets.all(22),
-          decoration: BoxDecoration(
-            gradient: kCardGradient,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Numéro de carte', style: label),
-              const SizedBox(height: 5),
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  data.pan,
-                  key: const Key('display-pan'),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 2,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Expire fin', style: label),
-                      const SizedBox(height: 5),
-                      Text(
-                        data.expiry,
-                        key: const Key('display-expiry'),
-                        style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 44),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('CVV', style: label),
-                      const SizedBox(height: 5),
-                      Text(
-                        data.cvv,
-                        key: const Key('display-cvv'),
-                        style: const TextStyle(color: KColors.navIndicator, fontSize: 18, fontWeight: FontWeight.w800),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              if (holder.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                Text(
-                  holder.toUpperCase(),
-                  style: const TextStyle(
-                    color: Color(0xFFD7D9F5),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1,
-                  ),
-                ),
-              ],
-            ],
-          ),
+        // Clé par autorisation : une nouvelle autorisation crée une vue neuve, jamais un rechargement.
+        KeyedSubtree(
+          key: ValueKey('display-view-${state.generation}'),
+          child: viewBuilder(context, state.authorization.displayUrl),
         ),
         const SizedBox(height: 20),
         Row(
@@ -259,7 +237,7 @@ class _Shown extends ConsumerWidget {
         const Text(
           "Lien à usage unique, valable une minute. Ne faites pas de capture d'écran et ne communiquez jamais "
           'votre CVV.',
-          style: TextStyle(fontSize: 13, color: Color(0xFFB8BCE8), height: 1.5),
+          style: TextStyle(fontSize: 13, color: _muted, height: 1.5),
         ),
       ],
     );
@@ -302,18 +280,17 @@ class _Expired extends StatelessWidget {
 }
 
 class _Failure extends StatelessWidget {
-  const _Failure({required this.failure, required this.onRetry});
-  final ApiFailure failure;
+  const _Failure({required this.state, required this.onRetry});
+  final SecureDisplayError state;
   final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      ErrorBlock(failure),
-      // Carte non active : réessayer ne changerait rien.
-      if (failure.code != ErrorCodes.forbidden) ...[
-        const SizedBox(height: 12),
+      ErrorBlock(state.failure),
+      const SizedBox(height: 12),
+      if (state.canRetry)
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(
@@ -323,8 +300,39 @@ class _Failure extends StatelessWidget {
             icon: const Icon(Symbols.refresh_rounded),
             label: const Text('Réessayer'),
           ),
+        )
+      else ...[
+        // Refus métier (plafond du jour, volume inhabituel, carte bloquée) : bouton désactivé.
+        const FilledButton(key: Key('display-show-disabled'), onPressed: null, child: Text('Afficher')),
+        const SizedBox(height: 8),
+        TextButton(
+          key: const Key('display-support'),
+          style: TextButton.styleFrom(foregroundColor: Colors.white),
+          onPressed: () => showToast(context, cardSupportMessage),
+          child: const Text('Contacter le support'),
         ),
       ],
+    ],
+  );
+}
+
+class _Blocked extends StatelessWidget {
+  const _Blocked({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    key: const Key('display-blocked'),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      ErrorBlock(ApiFailure.local(ErrorCodes.forbidden, message)),
+      const SizedBox(height: 12),
+      TextButton(
+        key: const Key('display-support'),
+        style: TextButton.styleFrom(foregroundColor: Colors.white),
+        onPressed: () => showToast(context, cardSupportMessage),
+        child: const Text('Contacter le support'),
+      ),
     ],
   );
 }

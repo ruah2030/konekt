@@ -12,14 +12,14 @@ final channelPreferenceProvider = AsyncNotifierProvider.autoDispose<ChannelPrefe
 
 class ChannelPreferenceController extends AsyncNotifier<MessageChannel> {
   @override
-  Future<MessageChannel> build() => ref.watch(profileRepositoryProvider).channelPreference();
+  Future<MessageChannel> build() => ref.watch(profileRepositoryProvider).preferredChannel();
 
   /// Mise à jour optimiste ; restaure la valeur précédente en cas d'erreur (relancée).
   Future<void> select(MessageChannel channel) async {
     final previous = state.value;
     state = AsyncData(channel);
     try {
-      await ref.read(profileRepositoryProvider).setChannelPreference(channel);
+      state = AsyncData(await ref.read(profileRepositoryProvider).setPreferredChannel(channel));
     } catch (_) {
       if (previous != null) state = AsyncData(previous);
       rethrow;
@@ -34,9 +34,14 @@ class DevicesController extends AsyncNotifier<List<Device>> {
   @override
   Future<List<Device>> build() => ref.watch(profileRepositoryProvider).devices();
 
-  Future<void> remove(String id) async {
-    await ref.read(profileRepositoryProvider).removeDevice(id);
-    state = AsyncData([...?state.value?.where((d) => d.id != id)]);
+  /// Déconnecte l'appareil : ses sessions sont fermées, il reste listé sans session active.
+  Future<DeviceDisconnection> disconnect(String deviceId) async {
+    final result = await ref.read(profileRepositoryProvider).disconnectDevice(deviceId);
+    state = AsyncData([
+      for (final d in state.value ?? const <Device>[])
+        d.deviceId == deviceId ? d.copyWith(hasActiveSession: false, notificationsEnabled: false) : d,
+    ]);
+    return result;
   }
 
   Future<void> refresh() async {

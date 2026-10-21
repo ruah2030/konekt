@@ -6,12 +6,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:intl/intl.dart';
 import 'package:konekt/app/app.dart';
+import 'package:konekt/core/domain/session.dart';
 import 'package:konekt/core/network/dio_client.dart';
 import 'package:konekt/core/network/fake/fake_api.dart';
 import 'package:konekt/core/network/fake/fake_db.dart';
 import 'package:konekt/core/storage/app_prefs.dart';
 import 'package:konekt/core/storage/secure_store.dart';
 import 'package:konekt/design_system/theme/app_theme.dart';
+import 'package:konekt/features/auth/domain/auth_models.dart';
+import 'package:konekt/features/auth/presentation/providers/auth_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Environnement de test : faux backend sans latence, stockage en mémoire.
@@ -29,7 +32,17 @@ class TestEnv {
     final store = InMemorySecureStore();
     if (signedIn) {
       final t = d.issueTokens();
-      await store.saveTokens(access: t.access, refresh: t.refresh);
+      await store.saveTokens(session: t.session, refresh: t.refresh);
+      await store.saveCardSession(
+        CardSession(
+          cardCustomerId: d.sessionCardId,
+          last4: d.last4,
+          firstName: d.holder['firstName'] as String,
+          lastName: d.holder['lastName'] as String,
+          hasPin: d.hasPin,
+          isExternalCard: d.isExternalCard,
+        ),
+      );
     }
     return TestEnv._(d, api, store, AppPrefs(p));
   }
@@ -51,6 +64,14 @@ class TestEnv {
   Future<void> pumpApp(WidgetTester tester) async {
     await tester.pumpWidget(ProviderScope(overrides: overrides, child: const KonektApp(useGoogleFonts: false)));
     await tester.pump();
+  }
+
+  /// Attend que la session soit restaurée (AuthState ≠ unknown) dans [c].
+  static Future<void> waitForAuth(ProviderContainer c) async {
+    c.read(authControllerProvider);
+    for (var i = 0; i < 50 && c.read(authControllerProvider).status == AuthStatus.unknown; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
   }
 
   /// Un écran isolé (sans routeur), avec le thème Konekt.

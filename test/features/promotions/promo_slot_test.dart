@@ -24,7 +24,9 @@ Future<TestEnv> pumpSlot(WidgetTester tester, PromoPlacement placement, {FakeDb?
       // La carte est chargée comme sur l'accueil (openService lit son statut).
       body: Consumer(
         builder: (_, ref, child) {
-          ref.watch(cardProvider);
+          ref
+            ..watch(cardProvider)
+            ..watch(serviceOffersProvider);
           return child!;
         },
         child: Padding(
@@ -102,6 +104,13 @@ void main() {
     await tester.tap(find.byKey(const Key('promo-ad_cash')));
     await settle(tester);
     expect(find.text(CardStatus.inactive.blockedMessage), findsOneWidget);
+  });
+
+  testWidgets('action service grisée au catalogue : motif, pas de parcours', (tester) async {
+    await pumpSlot(tester, PromoPlacement.receipt, db: FakeDb(incident: true));
+    await tester.tap(find.byKey(const Key('promo-ad_elec')));
+    await settle(tester);
+    expect(find.text('Momentanément indisponible — nos équipes travaillent au rétablissement.'), findsOneWidget);
   });
 
   testWidgets('publicités désactivées : rien n’est affiché', (tester) async {

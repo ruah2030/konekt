@@ -9,16 +9,21 @@ import '../../../../core/domain/service_type.dart';
 import '../../../../core/utils/money_format.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
-import '../../../payment/presentation/open_service.dart';
+import '../../../auth/presentation/providers/auth_controller.dart';
+import 'home_services.dart';
 
 /// Montant et unité affichés dans la carte solde selon le statut de la carte.
+/// L'API refuse le solde (400) d'une carte suspendue, perdue ou désactivée : « — » sans erreur.
+/// Carte à activer : 0 (l'API renvoie 0 sans interroger l'émetteur). [failed] : solde indisponible.
 ({String amount, String unit}) balanceDisplay({
   required CardStatus? status,
-  required int? balance,
+  required num? balance,
   required bool hidden,
+  bool failed = false,
 }) => switch (status) {
   CardStatus.preActive => (amount: '0', unit: 'FCFA'),
-  CardStatus.inactive || CardStatus.lostOrStolen => (amount: '—', unit: ''),
+  CardStatus.inactive || CardStatus.lostOrStolen || CardStatus.deactivated => (amount: '—', unit: ''),
+  _ when failed => (amount: '—', unit: ''),
   _ when hidden => (amount: '••• •••', unit: 'FCFA'),
   _ => (amount: balance == null ? '…' : formatNumber(balance), unit: 'FCFA'),
 };
@@ -65,9 +70,9 @@ class _Header extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final holder = ref.watch(holderProvider).value;
-    final last4 = ref.watch(cardProvider).value?.last4;
-    final unread = ref.watch(unreadCountProvider);
+    final holder = ref.watch(holderProvider);
+    final last4 = ref.watch(cardSessionProvider)?.last4;
+    final unread = ref.watch(unreadCountProvider).value ?? 0;
     return Row(
       children: [
         Container(
@@ -108,7 +113,7 @@ class _Header extends ConsumerWidget {
               ),
               const SizedBox(height: 1),
               Text(
-                last4 == null ? 'Carte' : 'Carte •••• $last4',
+                last4 == null || last4.isEmpty ? 'Carte' : 'Carte •••• $last4',
                 style: const TextStyle(fontSize: 12, color: KColors.onSurfaceVariant, fontWeight: FontWeight.w500),
               ),
             ],
@@ -138,8 +143,13 @@ class _BalanceBlock extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(cardStatusProvider);
     final hidden = ref.watch(hideBalanceProvider);
-    final balance = ref.watch(balanceProvider).value;
-    final display = balanceDisplay(status: status, balance: balance, hidden: hidden);
+    final balance = ref.watch(balanceProvider);
+    final display = balanceDisplay(
+      status: status,
+      balance: balance.value,
+      hidden: hidden,
+      failed: balance.hasError && !balance.isLoading,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -226,10 +236,10 @@ class _QuickActions extends ConsumerWidget {
     }
 
     final items = [
-      ('transfer', 'Envoyer', Symbols.north_east_rounded, () => openService(context, ref, ServiceType.transfer)),
-      ('payout', 'Retirer', Symbols.south_west_rounded, () => openService(context, ref, ServiceType.payout)),
-      ('topup', 'Recharger', Symbols.add_rounded, () => openService(context, ref, ServiceType.topup)),
-      ('card', 'Ma carte', Symbols.visibility_rounded, openDisplay),
+      ('transfer', 'Envoyer', Symbols.north_east_rounded, ServiceType.transfer),
+      ('payout', 'Retirer', Symbols.south_west_rounded, ServiceType.payout),
+      ('topup', 'Recharger', Symbols.add_rounded, ServiceType.topup),
+      ('card', 'Ma carte', Symbols.visibility_rounded, null),
     ];
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -242,9 +252,9 @@ class _QuickActions extends ConsumerWidget {
                 key: Key('quick-${items[i].$1}'),
                 label: items[i].$2,
                 icon: items[i].$3,
-                onTap: items[i].$4,
+                onTap: items[i].$4 == null ? openDisplay : () => openHomeService(context, ref, items[i].$4!),
                 primary: i == 0,
-                enabled: active,
+                enabled: active && (items[i].$4 == null || serviceAvailable(ref, items[i].$4!)),
               ),
             ),
           ),

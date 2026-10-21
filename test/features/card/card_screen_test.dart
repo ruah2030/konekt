@@ -6,124 +6,118 @@ import 'package:konekt/features/card/presentation/screens/card_screen.dart';
 import '../../helpers/test_app.dart';
 
 void main() {
-  Future<TestEnv> pump(WidgetTester tester, {String status = 'ACTIVE'}) async {
+  Future<TestEnv> pump(WidgetTester tester, {String status = 'Active'}) async {
     tester.view
-      ..physicalSize = const Size(1200, 3000)
+      ..physicalSize = const Size(1200, 3200)
       ..devicePixelRatio = 3;
     addTearDown(tester.view.reset);
-    final env = await TestEnv.create(signedIn: true, db: FakeDb(cardStatus: status));
+    final env = await TestEnv.create(signedIn: true, db: FakeDb(cardStatus: status, hasPin: true));
     await env.pumpScreen(tester, const CardScreen());
     await tester.pumpAndSettle();
     return env;
   }
 
-  double opacityOf(WidgetTester tester, String key) =>
-      tester.widget<Opacity>(find.descendant(of: find.byKey(Key(key)), matching: find.byType(Opacity)).first).opacity;
+  Future<void> confirm(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
+    await tester.pumpAndSettle();
+  }
 
-  testWidgets('affiche la carte, les infos et les actions', (tester) async {
+  testWidgets('affiche la carte, ses infos et les actions d’une carte active', (tester) async {
     await pump(tester);
     expect(find.text('Ma carte'), findsOneWidget);
     expect(find.text('•••• •••• •••• 4589'), findsOneWidget);
-    expect(find.text('AWA HOUNGBÉDJI'), findsOneWidget);
-    expect(find.text('VISA'), findsOneWidget);
-    expect(find.text('Active'), findsOneWidget);
-    expect(find.text('Visa Virtual Standard'), findsOneWidget);
+    expect(find.text('Virtual Standard - UBA BJ'), findsOneWidget);
     expect(find.text('UBA Bénin'), findsOneWidget);
     expect(find.text('121436474'), findsOneWidget);
-    expect(find.text('Voir numéro et CVV'), findsOneWidget);
-    expect(find.text('Suspendre ma carte'), findsOneWidget);
-    expect(find.text('Déclarer perdue ou volée'), findsOneWidget);
-    expect(opacityOf(tester, 'card-action-view'), 1);
+    expect(find.byKey(const Key('card-action-view')), findsOneWidget);
+    expect(find.byKey(const Key('card-action-suspend')), findsOneWidget);
+    expect(find.byKey(const Key('card-action-lost')), findsOneWidget);
+    expect(find.byKey(const Key('card-action-reactivate')), findsNothing);
   });
 
-  testWidgets('suspendre via le dialogue → INACTIVE et action « Réactiver »', (tester) async {
+  testWidgets('suspendre (confirmation) → Inactive et action « Réactiver », puis réactiver', (tester) async {
     final env = await pump(tester);
     await tester.tap(find.byKey(const Key('card-action-suspend')));
     await tester.pumpAndSettle();
     expect(find.text('Suspendre ma carte ?'), findsOneWidget);
-    expect(
-      find.text("Plus aucun paiement ni retrait jusqu'à la réactivation. Vous pourrez la réactiver à tout moment."),
-      findsOneWidget,
-    );
-    await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
-    await tester.pumpAndSettle();
+    await confirm(tester);
 
-    expect(env.db.cardStatus, 'INACTIVE');
+    expect(env.db.cardStatus, 'Inactive');
+    expect(env.db.operations.first['amount'], 0);
     expect(find.text('Carte suspendue.'), findsOneWidget);
-    expect(find.text('Suspendue'), findsOneWidget);
     expect(find.byKey(const Key('card-action-reactivate')), findsOneWidget);
     expect(find.byKey(const Key('card-action-suspend')), findsNothing);
-    expect(opacityOf(tester, 'card-action-view'), 0.4);
+    // Une carte suspendue reste affichable.
+    expect(find.byKey(const Key('card-action-view')), findsOneWidget);
 
-    // Réactivation.
     await tester.tap(find.byKey(const Key('card-action-reactivate')));
     await tester.pumpAndSettle();
-    expect(find.text('Réactiver ma carte ?'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
-    await tester.pumpAndSettle();
-    expect(env.db.cardStatus, 'ACTIVE');
-    expect(find.text('Carte réactivée.'), findsOneWidget);
+    await confirm(tester);
+    expect(env.db.cardStatus, 'Active');
     expect(find.byKey(const Key('card-action-suspend')), findsOneWidget);
   });
 
-  testWidgets('annuler le dialogue ne change rien', (tester) async {
+  testWidgets('annuler la confirmation ne change rien', (tester) async {
     final env = await pump(tester);
     await tester.tap(find.byKey(const Key('card-action-suspend')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-dialog-cancel')));
     await tester.pumpAndSettle();
-    expect(env.db.cardStatus, 'ACTIVE');
-    expect(find.byKey(const Key('card-action-suspend')), findsOneWidget);
+    expect(env.db.cardStatus, 'Active');
   });
 
-  testWidgets('déclarer perdue ou volée → bloquée, actions grisées', (tester) async {
+  testWidgets('déclarer perdue depuis Active : avertissement définitif, puis carte bloquée + support', (tester) async {
     final env = await pump(tester);
+    final ops = env.db.operations.length;
     await tester.tap(find.byKey(const Key('card-action-lost')));
     await tester.pumpAndSettle();
-    expect(find.text('Déclarer perdue ou volée ?'), findsOneWidget);
-    expect(
-      find.text(
-        'Ce blocage est définitif. Vos fonds ne sont pas perdus : le support pourra les transférer sur une nouvelle carte.',
-      ),
-      findsOneWidget,
-    );
-    await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
-    await tester.pumpAndSettle();
+    expect(find.textContaining('DÉFINITIVE'), findsOneWidget);
+    expect(find.textContaining('même si vous la retrouvez'), findsOneWidget);
+    expect(find.textContaining('Vos fonds ne sont pas perdus'), findsOneWidget);
+    expect(find.textContaining(lostFromSuspendedNotice), findsNothing);
+    await confirm(tester);
 
-    expect(env.db.cardStatus, 'LOST_OR_STOLEN');
-    expect(env.db.notifications.first['title'], 'Carte bloquée');
-    expect(find.text('Carte bloquée. Une alerte a été envoyée sur tous vos canaux.'), findsOneWidget);
-    expect(find.text('Bloquée'), findsOneWidget);
-    expect(opacityOf(tester, 'card-action-lost'), 0.4);
-    expect(opacityOf(tester, 'card-action-suspend'), 0.4);
+    expect(env.db.cardStatus, 'LostOrStolen');
+    expect(env.db.operations.length, ops + 1);
+    expect(env.db.notifications.first['kind'], 'SECURITY');
+    expect(find.byKey(const Key('card-action-suspend')), findsNothing);
+    expect(find.byKey(const Key('card-action-lost')), findsNothing);
+    expect(find.byKey(const Key('card-terminal-notice')), findsOneWidget);
+    expect(find.byKey(const Key('card-support')), findsOneWidget);
+  });
 
-    // Nouvelle tentative : simple message, pas de dialogue.
+  testWidgets('déclarer perdue depuis Inactive : explication, puis deux appels (Active puis LostOrStolen)', (
+    tester,
+  ) async {
+    final env = await pump(tester, status: 'Inactive');
+    final ops = env.db.operations.length;
     await tester.tap(find.byKey(const Key('card-action-lost')));
     await tester.pumpAndSettle();
-    expect(find.text('Déclarer perdue ou volée ?'), findsNothing);
-    expect(
-      find.text(
-        'Carte déclarée perdue ou volée. Contactez le support : vos fonds peuvent être transférés sur une nouvelle carte.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.textContaining(lostFromSuspendedNotice), findsOneWidget);
+    await confirm(tester);
+
+    expect(env.db.cardStatus, 'LostOrStolen');
+    expect(env.db.operations.length, ops + 2);
+    expect(env.db.operations[1]['service']['label'], 'Réactivation de la carte');
+    expect(env.db.operations[0]['service']['label'], 'Déclaration de perte ou de vol');
+    expect(find.byKey(const Key('card-terminal-notice')), findsOneWidget);
   });
 
-  testWidgets('carte suspendue : « Voir numéro et CVV » affiche la raison', (tester) async {
-    await pump(tester, status: 'INACTIVE');
-    await tester.tap(find.byKey(const Key('card-action-view')));
-    await tester.pumpAndSettle();
-    expect(find.text('Cette carte est suspendue. Réactivez-la pour payer à nouveau.'), findsOneWidget);
+  testWidgets('carte pré-active : actions de statut masquées, affichage possible', (tester) async {
+    await pump(tester, status: 'PreActive');
+    expect(find.byKey(const Key('card-action-view')), findsOneWidget);
+    expect(find.byKey(const Key('card-action-suspend')), findsNothing);
+    expect(find.byKey(const Key('card-action-reactivate')), findsNothing);
+    expect(find.byKey(const Key('card-action-lost')), findsNothing);
+    expect(find.byKey(const Key('card-preactive-notice')), findsOneWidget);
   });
 
-  testWidgets('erreur serveur → message affiché, statut inchangé', (tester) async {
-    final env = await pump(tester);
-    env.db.cardStatus = 'INACTIVE'; // désynchronisé : le serveur refusera la suspension
-    await tester.tap(find.byKey(const Key('card-action-suspend')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
-    await tester.pumpAndSettle();
-    expect(find.text('Votre carte est déjà suspendue.'), findsOneWidget);
-    expect(find.byKey(const Key('card-action-suspend')), findsOneWidget);
+  testWidgets('carte désactivée : aucune action, support', (tester) async {
+    await pump(tester, status: 'Deactivated');
+    expect(find.byKey(const Key('card-action-suspend')), findsNothing);
+    expect(find.byKey(const Key('card-action-lost')), findsNothing);
+    await tester.tap(find.byKey(const Key('card-support')));
+    await tester.pump();
+    expect(find.textContaining('Support Konekt'), findsOneWidget);
   });
 }

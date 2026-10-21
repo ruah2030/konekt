@@ -12,31 +12,23 @@ class StatusPill extends StatelessWidget {
       CardStatus.active => (KColors.successDark, KColors.successContainer),
       CardStatus.inactive => (KColors.onSecondaryContainer, KColors.secondaryContainer),
       CardStatus.preActive => (KColors.info, KColors.infoContainer),
-      CardStatus.lostOrStolen => (KColors.onErrorContainer, KColors.errorContainer),
+      CardStatus.lostOrStolen || CardStatus.deactivated => (KColors.onErrorContainer, KColors.errorContainer),
     };
     return StatusPill(label: s.label, color: fg, background: bg, key: key);
   }
 
-  factory StatusPill.operation(OperationStatus s, {Key? key}) => switch (s) {
-    OperationStatus.success => StatusPill(
-      label: 'Réussi',
-      color: KColors.successDark,
-      background: KColors.successContainer,
-      key: key,
-    ),
-    OperationStatus.failed => StatusPill(
-      label: 'Échoué',
-      color: KColors.onErrorContainer,
-      background: KColors.errorContainer,
-      key: key,
-    ),
-    OperationStatus.processing => StatusPill(
-      label: 'En cours',
-      color: KColors.warningDark,
-      background: KColors.warningContainer,
-      key: key,
-    ),
-  };
+  factory StatusPill.operation(OperationStatus s, {Key? key}) {
+    if (s.isSuccess) {
+      return StatusPill(label: s.label, color: KColors.successDark, background: KColors.successContainer, key: key);
+    }
+    if (s.isFailure) {
+      return StatusPill(label: s.label, color: KColors.onErrorContainer, background: KColors.errorContainer, key: key);
+    }
+    if (!s.isFinal) {
+      return StatusPill(label: s.label, color: KColors.warningDark, background: KColors.warningContainer, key: key);
+    }
+    return StatusPill(label: s.label, color: KColors.info, background: KColors.infoContainer, key: key);
+  }
 
   final String label;
   final Color color;

@@ -18,8 +18,9 @@ class HomeScreen extends ConsumerWidget {
       ..invalidate(cardProvider)
       ..invalidate(balanceProvider)
       ..invalidate(recentTransactionsProvider)
-      ..invalidate(notificationsProvider)
-      ..invalidate(incidentsProvider);
+      ..invalidate(unreadCountProvider)
+      ..invalidate(platformStatusProvider)
+      ..invalidate(serviceOffersProvider);
     await Future.wait<Object?>([
       ref.read(cardProvider.future),
       ref.read(balanceProvider.future),

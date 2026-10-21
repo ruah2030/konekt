@@ -6,26 +6,29 @@ import 'package:uuid/uuid.dart';
 import '../storage/secure_store.dart';
 import 'api_failure.dart';
 
-/// En-têtes systématiques : X-Request-Id (affiché comme « Réf. » dans les erreurs),
-/// identifiant d'appareil, version d'app et langue.
+/// En-têtes recommandés (guide §1.3) : X-Request-Id (affiché « Réf. » dans les erreurs),
+/// Accept-Language et User-Agent.
 class RequestHeadersInterceptor extends Interceptor {
-  RequestHeadersInterceptor(this._store, {required this.appVersion});
-  final SecureStore _store;
-  final String appVersion;
+  RequestHeadersInterceptor({required this.userAgent});
+  final String userAgent;
   static const _uuid = Uuid();
 
   @override
-  Future<void> onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     options.headers['X-Request-Id'] ??= 'req_${_uuid.v4().replaceAll('-', '').substring(0, 16).toUpperCase()}';
-    options.headers['X-Device-Id'] = await _store.deviceId();
-    options.headers['X-App-Version'] = appVersion;
-    options.headers['Accept-Language'] = 'fr-BJ';
+    options.headers['Accept-Language'] = 'fr';
+    options.headers['User-Agent'] = userAgent;
     handler.next(options);
   }
 }
 
-/// Ajoute le Bearer et rafraîchit le token sur 401 (une seule fois par requête).
-/// Les requêtes concurrentes attendent le refresh en cours ([QueuedInterceptor]).
+/// Ajoute le Bearer, renouvelle la session sur 401 `SESSION_EXPIRED` (un seul refresh à la fois,
+/// les requêtes concurrentes attendent grâce à [QueuedInterceptor]) puis rejoue UNE fois.
+///
+/// Règles 401 (guide §1.6) :
+/// - `SESSION_EXPIRED` → refresh puis rejeu ; échec du refresh → déconnexion ;
+/// - `UNAUTHENTICATED` « Jeton non reconnu pour cette route » → bug d'intégration, PAS de déconnexion ;
+/// - autre `UNAUTHENTICATED` sur une requête authentifiée → déconnexion.
 class AuthInterceptor extends QueuedInterceptor {
   AuthInterceptor({
     required this.store,
@@ -39,21 +42,21 @@ class AuthInterceptor extends QueuedInterceptor {
   final Dio retryDio;
   final void Function() onSessionExpired;
 
-  /// Routes qui ne portent pas de Bearer.
+  /// Routes appelées SANS `Authorization` (un jeton joint y est ignoré ou refusé).
   static const publicPaths = {
-    '/v1/invitations/verify',
-    '/v1/waitlist',
-    '/v1/auth/login',
-    '/v1/auth/otp/resend',
-    '/v1/auth/otp/verify',
-    '/v1/auth/refresh',
-    '/v1/status',
+    '/auth/customer/channels',
+    '/auth/customer/login/init',
+    '/auth/customer/login/confirm',
+    '/auth/customer/refresh',
+    '/status',
   };
+
+  static bool isPublic(String path) => publicPaths.contains(path) || path.startsWith('/card-display');
 
   @override
   Future<void> onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
-    if (!publicPaths.contains(options.path)) {
-      final token = await store.accessToken;
+    if (!isPublic(options.path)) {
+      final token = await store.sessionToken;
       if (token != null) options.headers['Authorization'] = 'Bearer $token';
     }
     handler.next(options);
@@ -62,35 +65,41 @@ class AuthInterceptor extends QueuedInterceptor {
   @override
   Future<void> onError(DioException err, ErrorInterceptorHandler handler) async {
     final opts = err.requestOptions;
-    final is401 = err.response?.statusCode == 401;
-    final hadToken = opts.headers.containsKey('Authorization');
     final body = err.response?.data;
-    final code = body is Map && body['error'] is Map ? (body['error'] as Map)['code'] : null;
-    // Un 401 métier (code ≠ UNAUTHENTICATED) ou une requête partie sans jeton
-    // (session déjà fermée) ne déclenche ni refresh ni expiration de session.
-    if (!is401 ||
-        !hadToken ||
-        (code != null && code != ErrorCodes.unauthenticated) ||
-        publicPaths.contains(opts.path) ||
-        opts.extra['retried'] == true) {
+    final code = body is Map ? body['code'] : null;
+    final message = body is Map ? '${body['message'] ?? ''}' : '';
+    final authenticated = opts.headers.containsKey('Authorization');
+    if (err.response?.statusCode != 401 || !authenticated || isPublic(opts.path)) {
+      return handler.next(err);
+    }
+    if (code == ErrorCodes.unauthenticated &&
+        RegExp('non reconnu pour cette route', caseSensitive: false).hasMatch(message)) {
+      return handler.next(err);
+    }
+    if (code != ErrorCodes.sessionExpired || opts.extra['retried'] == true) {
+      await store.clear();
+      onSessionExpired();
       return handler.next(err);
     }
     final refresh = await store.refreshToken;
     if (refresh == null) {
+      await store.clear();
       onSessionExpired();
       return handler.next(err);
     }
     try {
-      final res = await refreshDio.post<Map<String, dynamic>>('/v1/auth/refresh', data: {'refreshToken': refresh});
+      final res = await refreshDio.post<Map<String, dynamic>>(
+        '/auth/customer/refresh',
+        data: {'refreshToken': refresh},
+      );
       final data = res.data!;
-      await store.saveTokens(access: data['accessToken'] as String, refresh: data['refreshToken'] as String);
-      opts.headers['Authorization'] = 'Bearer ${data['accessToken']}';
+      await store.saveTokens(session: data['sessionToken'] as String, refresh: data['refreshToken'] as String);
+      opts.headers['Authorization'] = 'Bearer ${data['sessionToken']}';
       opts.extra['retried'] = true;
-      // Les exécutions de paiement portent une Idempotency-Key : le rejeu est sûr.
-      final retried = await retryDio.fetch<dynamic>(opts);
-      handler.resolve(retried);
+      // Rejeu sûr : sur SESSION_EXPIRED le serveur n'a rien exécuté (recette §7.2).
+      handler.resolve(await retryDio.fetch<dynamic>(opts));
     } catch (_) {
-      await store.clearTokens();
+      await store.clear();
       onSessionExpired();
       handler.next(err);
     }

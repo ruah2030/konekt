@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/domain/session.dart';
 import '../../../../core/network/dio_client.dart';
 import '../../../../core/storage/secure_store.dart';
 import '../../../account/presentation/account_providers.dart';
@@ -10,6 +11,9 @@ import '../../domain/auth_models.dart';
 
 /// État d'authentification global. Le routeur l'écoute pour ses redirections.
 final authControllerProvider = NotifierProvider<AuthController, AuthState>(AuthController.new);
+
+/// Carte de la session courante (null si déconnecté).
+final cardSessionProvider = Provider<CardSession?>((ref) => ref.watch(authControllerProvider).session);
 
 class AuthController extends Notifier<AuthState> {
   StreamSubscription<void>? _expiredSub;
@@ -27,19 +31,24 @@ class AuthController extends Notifier<AuthState> {
   AuthRepository get _repo => ref.read(authRepositoryProvider);
 
   Future<void> _restore() async {
-    final hasPin = await _repo.restore();
-    state = hasPin == null ? const AuthState.unauthenticated() : AuthState(AuthStatus.authenticated, hasPin: hasPin);
+    final session = await _repo.restore();
+    state = session == null ? const AuthState.unauthenticated() : AuthState.authenticated(session);
   }
 
-  /// Après validation de l'OTP.
-  void signedIn({required bool hasPin}) {
+  /// Après `login/confirm`.
+  void signedIn(CardSession session) {
     ref.read(loginChallengeProvider.notifier).clear();
     resetAccountState(ref);
-    state = AuthState(AuthStatus.authenticated, hasPin: hasPin);
+    state = AuthState.authenticated(session);
   }
 
-  /// Après création du code secret.
-  void pinCreated() => state = const AuthState(AuthStatus.authenticated, hasPin: true);
+  /// Après création du code secret (`POST /auth/customer/pin`).
+  Future<void> pinCreated() async {
+    final s = state.session;
+    if (s == null) return;
+    await _repo.markPinCreated();
+    state = AuthState.authenticated(s.copyWith(hasPin: true));
+  }
 
   Future<void> logout() async {
     try {
@@ -58,19 +67,19 @@ class AuthController extends Notifier<AuthState> {
     }
   }
 
-  /// Session terminée localement (déconnexion, révocation, refresh impossible).
+  /// Session terminée localement (appareil courant déconnecté, révocation…).
   void sessionEnded() => _clearSession();
 
   void _clearSession() {
     // Les jetons locaux sont toujours effacés : un `restore()` ultérieur ne doit pas rouvrir la session.
-    unawaited(ref.read(secureStoreProvider).clearTokens());
+    unawaited(ref.read(secureStoreProvider).clear());
     ref.read(loginChallengeProvider.notifier).clear();
     resetAccountState(ref);
     state = const AuthState.unauthenticated();
   }
 }
 
-/// Défi OTP en cours (entre l'écran de connexion et l'écran de code).
+/// Code de connexion en cours (entre l'écran carte et l'écran code).
 final loginChallengeProvider = NotifierProvider<LoginChallengeNotifier, LoginChallenge?>(LoginChallengeNotifier.new);
 
 class LoginChallengeNotifier extends Notifier<LoginChallenge?> {

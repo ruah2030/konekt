@@ -6,7 +6,6 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../../../../app/router/routes.dart';
 import '../../../../core/network/api_failure.dart';
 import '../../../../design_system/design_system.dart';
-import '../../../account/presentation/account_providers.dart';
 import '../../../auth/domain/auth_models.dart';
 import '../../../auth/presentation/providers/auth_controller.dart';
 import '../../domain/profile_models.dart';
@@ -30,9 +29,7 @@ class ProfileScreen extends ConsumerWidget {
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: () async {
-            ref
-              ..invalidate(holderProvider)
-              ..invalidate(channelPreferenceProvider);
+            ref.invalidate(channelPreferenceProvider);
             await ref.read(devicesProvider.notifier).refresh();
           },
           child: ListView(
@@ -66,7 +63,9 @@ class ProfileScreen extends ConsumerWidget {
                         key: const Key('profile-devices'),
                         icon: Symbols.devices_rounded,
                         label: 'Appareils connectés',
-                        sub: devices == null ? null : '${devices.length} appareil(s)',
+                        sub: devices == null
+                            ? null
+                            : '${devices.where((d) => d.hasActiveSession).length} appareil(s) connecté(s)',
                         onTap: () => context.push(Routes.devices),
                       ),
                     ],
@@ -116,8 +115,8 @@ class _Header extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final holder = ref.watch(holderProvider).value;
-    final last4 = ref.watch(cardProvider).value?.last4;
+    final session = ref.watch(cardSessionProvider);
+    final last4 = session?.last4;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
@@ -138,7 +137,7 @@ class _Header extends ConsumerWidget {
               radius: 28,
               backgroundColor: Colors.transparent,
               foregroundColor: KColors.primary,
-              child: Text(holder?.initials ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 19)),
+              child: Text(session?.initials ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 19)),
             ),
           ),
           const SizedBox(width: 16),
@@ -147,13 +146,14 @@ class _Header extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  holder?.fullName ?? '',
+                  session?.fullName ?? '',
                   key: const Key('profile-name'),
                   style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.4),
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  last4 == null ? '' : 'Carte •••• $last4',
+                  key: const Key('profile-card'),
+                  last4 == null || last4.isEmpty ? '' : 'Carte •••• $last4',
                   style: const TextStyle(fontSize: 13, color: KColors.onSurfaceVariant, fontWeight: FontWeight.w500),
                 ),
               ],

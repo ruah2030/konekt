@@ -25,6 +25,7 @@ dependencies:
   url_launcher: ^6.3.3
   uuid: ^4.6.0
   video_player: ^2.14.1
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:

@@ -38,7 +38,7 @@ class TransactionTile extends StatelessWidget {
       subtitle: relativeDate(tx.createdAt),
       amount: formatSignedFcfa(tx.amount),
       amountColor: tx.isCredit ? KColors.success : KColors.primary,
-      trailingSub: 'Solde ${formatNumber(tx.balanceAfter)}',
+      trailingSub: tx.balanceAfter == null ? null : 'Solde ${formatNumber(tx.balanceAfter!)}',
       showDivider: showDivider,
     );
   }
@@ -53,24 +53,27 @@ class OperationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final failed = op.status == OperationStatus.failed;
+    final failed = op.status.isFailure;
     final tint = failed
         ? (bg: KColors.errorContainer, fg: KColors.error)
         : op.isCredit
         ? (bg: KColors.successContainer, fg: KColors.success)
         : kindTint(op.service?.id ?? 'card');
-    final (label, color) = switch (op.status) {
-      OperationStatus.success => ('Réussi', KColors.success),
-      OperationStatus.failed => ('Échoué', KColors.error),
-      OperationStatus.processing => ('En cours', const Color(0xFFEA580C)),
-    };
+    final label = op.status.label;
+    final color = op.status.isSuccess
+        ? KColors.success
+        : failed
+        ? KColors.error
+        : op.status.isFinal
+        ? KColors.info
+        : const Color(0xFFEA580C);
     return TxTile(
       key: Key('op-${op.id}'),
       icon: kindIcon(op.service?.id ?? 'card'),
       tint: tint.bg,
       iconColor: tint.fg,
       title: op.title,
-      subtitle: relativeDate(op.createdAt),
+      subtitle: [relativeDate(op.createdAt), ?op.counterparty].join(' · '),
       amount: formatSignedFcfa(op.signedDisplayAmount),
       amountColor: failed
           ? KColors.outline

@@ -9,8 +9,11 @@ class HomeCardRepository {
   HomeCardRepository(this._dio);
   final Dio _dio;
 
-  /// `POST /v1/card/reactivate`.
-  Future<Result<void>> reactivate() => Result.guard(() => _dio.post<void>('/v1/card/reactivate'));
+  /// `PATCH /cards/status` `{cardCustomerId, newStatus: 'Active'}` (guide Partie 4 §13).
+  /// Aucun PIN exigé par l'API : la confirmation se fait dans l'app.
+  Future<Result<void>> reactivate(String cardCustomerId) => Result.guard(
+    () => _dio.patch<void>('/cards/status', data: {'cardCustomerId': cardCustomerId, 'newStatus': 'Active'}),
+  );
 }
 
 final homeCardRepositoryProvider = Provider<HomeCardRepository>((ref) => HomeCardRepository(ref.watch(dioProvider)));

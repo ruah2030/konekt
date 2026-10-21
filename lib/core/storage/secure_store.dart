@@ -1,63 +1,80 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:uuid/uuid.dart';
 
-/// Données sensibles : tokens et identifiant d'appareil (Keychain / Keystore).
+import '../domain/session.dart';
+
+/// Données sensibles : jetons et session porteur (Keychain iOS / Keystore Android).
+/// Les jetons ne doivent jamais apparaître dans les journaux ni dans une URL.
 class SecureStore {
   SecureStore([FlutterSecureStorage? storage]) : _s = storage ?? const FlutterSecureStorage();
 
   final FlutterSecureStorage _s;
 
-  static const _access = 'access_token';
-  static const _refresh = 'refresh_token';
-  static const _device = 'device_id';
+  static const _sessionTokenKey = 'session_token';
+  static const _refreshTokenKey = 'refresh_token';
+  static const _sessionKey = 'card_session';
 
-  String? _accessCache;
+  String? _sessionCache;
+  CardSession? _cardSessionCache;
 
-  Future<String?> get accessToken async => _accessCache ??= await _s.read(key: _access);
-  Future<String?> get refreshToken => _s.read(key: _refresh);
+  /// Jeton de session (`Authorization: Bearer …`).
+  Future<String?> get sessionToken async => _sessionCache ??= await _s.read(key: _sessionTokenKey);
+  Future<String?> get refreshToken => _s.read(key: _refreshTokenKey);
 
-  Future<void> saveTokens({required String access, required String refresh}) async {
-    _accessCache = access;
-    await _s.write(key: _access, value: access);
-    await _s.write(key: _refresh, value: refresh);
+  /// Remplace TOUJOURS les deux jetons ensemble (le refresh token est à usage unique).
+  Future<void> saveTokens({required String session, required String refresh}) async {
+    _sessionCache = session;
+    await _s.write(key: _sessionTokenKey, value: session);
+    await _s.write(key: _refreshTokenKey, value: refresh);
   }
 
-  Future<void> clearTokens() async {
-    _accessCache = null;
-    await _s.delete(key: _access);
-    await _s.delete(key: _refresh);
+  /// Carte de la session (identifiant émetteur, titulaire, `hasPin`…).
+  Future<CardSession?> get cardSession async {
+    if (_cardSessionCache != null) return _cardSessionCache;
+    final raw = await _s.read(key: _sessionKey);
+    if (raw == null) return null;
+    return _cardSessionCache = CardSession.fromJson(Map<String, dynamic>.from(jsonDecode(raw) as Map));
   }
 
-  Future<String> deviceId() async {
-    final existing = await _s.read(key: _device);
-    if (existing != null) return existing;
-    final id = const Uuid().v4();
-    await _s.write(key: _device, value: id);
-    return id;
+  Future<void> saveCardSession(CardSession session) async {
+    _cardSessionCache = session;
+    await _s.write(key: _sessionKey, value: jsonEncode(session.toJson()));
+  }
+
+  /// Efface jetons et session (déconnexion, même si l'appel réseau a échoué).
+  Future<void> clear() async {
+    _sessionCache = null;
+    _cardSessionCache = null;
+    await _s.delete(key: _sessionTokenKey);
+    await _s.delete(key: _refreshTokenKey);
+    await _s.delete(key: _sessionKey);
   }
 }
 
 /// Stockage en mémoire, utilisé dans les tests.
 class InMemorySecureStore extends SecureStore {
   InMemorySecureStore() : super(const FlutterSecureStorage());
-  String? _a, _r;
-  final String _d = const Uuid().v4();
+  String? _st, _rt;
+  CardSession? _cs;
 
   @override
-  Future<String?> get accessToken async => _a;
+  Future<String?> get sessionToken async => _st;
   @override
-  Future<String?> get refreshToken async => _r;
+  Future<String?> get refreshToken async => _rt;
   @override
-  Future<void> saveTokens({required String access, required String refresh}) async {
-    _a = access;
-    _r = refresh;
+  Future<void> saveTokens({required String session, required String refresh}) async {
+    _st = session;
+    _rt = refresh;
   }
 
   @override
-  Future<void> clearTokens() async => _a = _r = null;
+  Future<CardSession?> get cardSession async => _cs;
   @override
-  Future<String> deviceId() async => _d;
+  Future<void> saveCardSession(CardSession session) async => _cs = session;
+  @override
+  Future<void> clear() async => _st = _rt = _cs = null;
 }
 
 final secureStoreProvider = Provider<SecureStore>((ref) => SecureStore());

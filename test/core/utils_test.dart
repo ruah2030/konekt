@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:konekt/app/router/app_router.dart';
 import 'package:konekt/app/router/routes.dart';
+import 'package:konekt/core/domain/session.dart';
 import 'package:konekt/core/utils/countdown.dart';
 import 'package:konekt/core/utils/money_format.dart';
 import 'package:konekt/core/utils/relative_date.dart';
@@ -43,8 +44,9 @@ void main() {
 
   test('authRedirect', () {
     const unauth = AuthState.unauthenticated();
-    const noPin = AuthState(AuthStatus.authenticated);
-    const ok = AuthState(AuthStatus.authenticated, hasPin: true);
+    const s = CardSession(cardCustomerId: '121436474', last4: '4589', firstName: 'Awa', lastName: 'H', hasPin: false);
+    final noPin = AuthState.authenticated(s);
+    final ok = AuthState.authenticated(s.copyWith(hasPin: true));
     expect(authRedirect(const AuthState.unknown(), Routes.home), Routes.splash);
     expect(authRedirect(unauth, Routes.home), Routes.login);
     expect(authRedirect(unauth, Routes.invite), isNull);

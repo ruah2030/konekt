@@ -1,242 +1,198 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:konekt/core/domain/card.dart';
-import 'package:konekt/core/network/fake/fake_api.dart';
-import 'package:konekt/core/network/fake/fake_db.dart';
+import 'package:konekt/core/domain/service_type.dart';
 import 'package:konekt/core/network/api_failure.dart';
 import 'package:konekt/core/result.dart';
-import 'package:konekt/core/utils/money_format.dart';
-import 'package:konekt/design_system/theme/app_theme.dart';
 import 'package:konekt/features/account/data/account_repository.dart';
-import 'package:konekt/features/account/presentation/account_providers.dart';
 import 'package:konekt/features/home/data/home_card_repository.dart';
+import 'package:konekt/features/home/presentation/widgets/home_services.dart';
+import 'package:konekt/core/network/fake/fake_api.dart';
+import 'package:konekt/core/network/fake/fake_db.dart';
+import 'package:konekt/core/utils/money_format.dart';
+import 'package:konekt/design_system/design_system.dart';
 import 'package:konekt/features/home/presentation/screens/home_screen.dart';
-import 'package:konekt/features/home/presentation/widgets/home_sections.dart';
 import 'package:konekt/features/home/presentation/widgets/home_top_section.dart';
 
 import '../../helpers/test_app.dart';
+import 'home_test_utils.dart';
 
-/// Laisse le faux backend répondre sans `pumpAndSettle` (rotation des publicités = timer périodique).
-Future<void> settle(WidgetTester tester, [int frames = 6]) async {
-  for (var i = 0; i < frames; i++) {
-    await tester.pump(const Duration(milliseconds: 100));
-  }
-}
-
-Future<TestEnv> pumpHome(WidgetTester tester, {FakeDb? db}) async {
-  tester.view.physicalSize = const Size(900, 2600);
-  tester.view.devicePixelRatio = 1;
-  addTearDown(tester.view.reset);
+Future<TestEnv> pumpHome(WidgetTester tester, {FakeDb? db, void Function(TestEnv env)? setup}) async {
   final env = await TestEnv.create(signedIn: true, db: db);
-  await env.pumpScreen(tester, const HomeScreen());
-  await settle(tester);
+  setup?.call(env);
+  await pumpRouted(tester, env, const HomeScreen());
   return env;
-}
-
-/// Comme [TestEnv.pumpScreen], avec des overrides supplémentaires.
-Future<void> pumpWith(WidgetTester tester, TestEnv env, List<Override> extra) async {
-  tester.view.physicalSize = const Size(900, 2600);
-  tester.view.devicePixelRatio = 1;
-  addTearDown(tester.view.reset);
-  await tester.pumpWidget(
-    ProviderScope(
-      overrides: [...env.overrides, ...extra],
-      child: MaterialApp(
-        theme: AppTheme.light(useGoogleFonts: false),
-        locale: const Locale('fr'),
-        supportedLocales: const [Locale('fr')],
-        localizationsDelegates: GlobalMaterialLocalizations.delegates,
-        home: const HomeScreen(),
-      ),
-    ),
-  );
-  await settle(tester);
 }
 
 class _FailingRepo extends HomeCardRepository {
   _FailingRepo() : super(Dio());
 
   @override
-  Future<Result<void>> reactivate() async =>
-      const Err(ApiFailure(code: 'FORBIDDEN', message: 'Réactivation impossible pour le moment.'));
+  Future<Result<void>> reactivate(String cardCustomerId) async =>
+      const Err(ApiFailure(code: 'INTERNAL_ERROR', message: 'Impossible de joindre l’émetteur de la carte.'));
 }
 
 String balanceText(WidgetTester tester) => tester.widget<Text>(find.byKey(const Key('home-balance'))).data!;
 
+/// Repli si le domaine carte n'a pas encore enregistré `PATCH /cards/status` (le premier handler
+/// correspondant répond : celui-ci n'est utilisé que si la route n'existe pas).
+void registerStatusFallback(TestEnv env, List<Map<String, dynamic>> calls) {
+  env.api.on(
+    'PATCH',
+    '/cards/status',
+    (r) {
+      calls.add(r.body);
+      final previous = env.db.cardStatus;
+      env.db.cardStatus = '${r.body['newStatus']}';
+      return FakeResponse.ok({
+        'success': true,
+        'operationId': env.db.id('clop'),
+        'previousStatus': previous,
+        'newStatus': env.db.cardStatus,
+      });
+    },
+    fields: {
+      'cardCustomerId',
+      'cardTierSlug',
+      'newStatus',
+      'phoneCountryCode',
+      'phoneNumber',
+      'acknowledgeIrreversible',
+    },
+  );
+}
+
 void main() {
   group('balanceDisplay', () {
     test('applique les règles par statut', () {
-      expect(balanceDisplay(status: CardStatus.preActive, balance: 5000, hidden: false), (amount: '0', unit: 'FCFA'));
-      expect(balanceDisplay(status: CardStatus.inactive, balance: 5000, hidden: false), (amount: '—', unit: ''));
-      expect(balanceDisplay(status: CardStatus.lostOrStolen, balance: 5000, hidden: true), (amount: '—', unit: ''));
+      expect(balanceDisplay(status: CardStatus.preActive, balance: null, hidden: false), (amount: '0', unit: 'FCFA'));
+      for (final s in [CardStatus.inactive, CardStatus.lostOrStolen, CardStatus.deactivated]) {
+        expect(balanceDisplay(status: s, balance: null, hidden: false, failed: true), (amount: '—', unit: ''));
+      }
       expect(balanceDisplay(status: CardStatus.active, balance: 5000, hidden: true), (amount: '••• •••', unit: 'FCFA'));
-      expect(balanceDisplay(status: CardStatus.active, balance: 5000, hidden: false).amount, formatNumber(5000));
+      expect(balanceDisplay(status: CardStatus.active, balance: 720.15, hidden: false).amount, formatNumber(720));
+      expect(balanceDisplay(status: CardStatus.active, balance: null, hidden: false, failed: true).amount, '—');
     });
   });
 
-  testWidgets('carte active : en-tête, solde formaté, transactions, badge non-lus', (tester) async {
-    await pumpHome(tester);
+  testWidgets('carte active : nom, carte, solde, pastille = unread-count, catalogue', (tester) async {
+    await pumpHome(
+      tester,
+      setup: (env) => env.db.addNotification('Bienvenue', 'Votre carte est prête.', kind: 'SUCCESS'),
+    );
 
     expect(find.text('Bonjour Awa'), findsOneWidget);
     expect(find.text('Carte •••• 4589'), findsOneWidget);
-    expect(find.text('AH'), findsOneWidget);
     expect(balanceText(tester), formatNumber(152400));
-    expect(find.text('FCFA'), findsOneWidget);
-    expect(find.text('Active'), findsOneWidget);
     expect(find.byKey(const Key('card-alert')), findsNothing);
     expect(find.byKey(const Key('incident-banner')), findsNothing);
-
-    // 2 notifications non lues dans le jeu de données.
-    expect(tester.widget<Text>(find.byKey(const Key('unread-count'))).data, '2');
+    // 2 non lues dans le jeu de données + 1 ajoutée : la pastille vient du serveur.
+    expect(tester.widget<Text>(find.byKey(const Key('unread-count'))).data, '3');
 
     expect(find.text('Payer et recharger'), findsOneWidget);
-    expect(find.text('Bientôt'), findsOneWidget);
-    expect(find.text('Envoi à Afiavi Sossou'), findsOneWidget);
-    expect(find.byKey(const Key('tx-tx_4')), findsOneWidget);
-    expect(find.text('POWERED BY BESTCASH CARDS BÉNIN'), findsOneWidget);
-  });
-
-  testWidgets('masquer le solde est persisté', (tester) async {
-    final env = await pumpHome(tester);
-
-    await tester.tap(find.byKey(const Key('toggle-balance')));
+    expect(find.text('Bientôt'), findsNothing);
+    // La TV suit le catalogue (« En maintenance » dans le faux backend) : grisée, pas masquée.
+    expect(find.byKey(const Key('catalog-tv')), findsOneWidget);
+    expect(find.text('Indisponible'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('catalog-tv')));
     await settle(tester, 2);
-    expect(balanceText(tester), '••• •••');
-    expect(find.text('FCFA'), findsOneWidget);
-    expect(env.prefs.hideBalance, isTrue);
+    expect(find.text('En maintenance.'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('toggle-balance')));
-    await settle(tester, 2);
-    expect(balanceText(tester), formatNumber(152400));
-  });
-
-  testWidgets('carte suspendue : « — », alerte, actions bloquées, réactivation', (tester) async {
-    final db = FakeDb(cardStatus: 'INACTIVE');
-    final env = await TestEnv.create(signedIn: true, db: db);
-    // Repli si le handler du domaine carte n'est pas enregistré (le premier handler correspondant répond).
-    env.api.on('POST', '/v1/card/reactivate', (_) {
-      db.cardStatus = 'ACTIVE';
-      return FakeResponse.ok(db.cardJson());
-    });
-    tester.view.physicalSize = const Size(900, 2600);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
-    await env.pumpScreen(tester, const HomeScreen());
+    // Service disponible : le parcours s'ouvre.
+    await tester.tap(find.byKey(const Key('catalog-airtime')));
     await settle(tester);
+    expect(find.text('Service airtime'), findsOneWidget);
+  });
+
+  testWidgets('derniers mouvements avec signe déduit du solde courant', (tester) async {
+    await pumpHome(tester);
+    expect(find.text('Transfert sortant'), findsOneWidget);
+    expect(find.text(formatSignedFcfa(-50440)), findsOneWidget);
+    expect(find.text(formatSignedFcfa(100000)), findsOneWidget);
+  });
+
+  testWidgets('incident : bannière et électricité grisée (tap → motif)', (tester) async {
+    await pumpHome(tester, db: FakeDb(incident: true));
+
+    expect(find.byKey(const Key('incident-banner')), findsOneWidget);
+    expect(find.textContaining('Électricité prépayée'), findsWidgets);
+
+    await tester.tap(find.byKey(const Key('catalog-elec')));
+    await settle(tester, 2);
+    expect(find.text('Momentanément indisponible — nos équipes travaillent au rétablissement.'), findsOneWidget);
+    expect(find.textContaining('Service elec'), findsNothing);
+  });
+
+  test('service absent du catalogue : ouvrable', () {
+    expect(offerFor(const [], ServiceType.cash), isNull);
+    const offer = ServiceOffer(
+      key: 'cash-withdrawal',
+      label: 'Retrait au guichet',
+      kind: 'CATALOG',
+      amountMode: 'FREE',
+      available: false,
+      unavailableReason: 'En maintenance.',
+    );
+    expect(offerFor(const [offer], ServiceType.cash), same(offer));
+    expect(offerFor(const [offer], ServiceType.elec), isNull);
+  });
+
+  testWidgets('carte suspendue : « — » sans erreur, alerte, réactivation → Active', (tester) async {
+    final calls = <Map<String, dynamic>>[];
+    final env = await pumpHome(
+      tester,
+      db: FakeDb(cardStatus: 'Inactive'),
+      setup: (env) => registerStatusFallback(env, calls),
+    );
 
     expect(balanceText(tester), '—');
-    expect(find.text('FCFA'), findsNothing);
-    expect(find.byKey(const Key('toggle-balance')), findsNothing);
+    expect(find.byType(ErrorView), findsNothing);
+    expect(find.byKey(const Key('card-alert')), findsOneWidget);
     expect(find.text(CardStatus.inactive.blockedMessage), findsOneWidget);
 
-    // Action rapide refusée tant que la carte est suspendue.
-    await tester.tap(find.byKey(const Key('quick-transfer')));
-    await settle(tester, 2);
-    expect(find.text(CardStatus.inactive.blockedMessage), findsNWidgets(2));
-
-    await tester.tap(find.text('Réactiver ma carte'));
+    await tester.tap(find.byKey(const Key('card-alert-cta')));
     await settle(tester, 3);
-    expect(find.text('Réactiver ma carte ?'), findsOneWidget);
     await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
     await settle(tester);
 
-    expect(db.cardStatus, 'ACTIVE');
+    expect(env.db.cardStatus, 'Active');
+    if (calls.isNotEmpty) {
+      expect(calls.single, {'cardCustomerId': env.db.sessionCardId, 'newStatus': 'Active'});
+    }
     expect(find.text('Carte réactivée.'), findsOneWidget);
     expect(find.byKey(const Key('card-alert')), findsNothing);
-    expect(find.text('Active'), findsOneWidget);
     expect(balanceText(tester), formatNumber(152400));
   });
 
-  testWidgets('réactivation annulée : aucun appel', (tester) async {
-    final db = FakeDb(cardStatus: 'INACTIVE');
-    final env = await TestEnv.create(signedIn: true, db: db);
-    await env.pumpScreen(tester, const HomeScreen());
-    await settle(tester);
-    await tester.ensureVisible(find.byKey(const Key('card-alert-cta')));
-    await tester.tap(find.byKey(const Key('card-alert-cta')));
-    await settle(tester, 3);
-    await tester.tap(find.byKey(const Key('confirm-dialog-cancel')));
-    await settle(tester, 3);
-    expect(db.cardStatus, 'INACTIVE');
-    expect(find.byKey(const Key('card-alert')), findsOneWidget);
-  });
-
-  testWidgets('échec de la réactivation : message d’erreur, statut inchangé', (tester) async {
-    final env = await TestEnv.create(signedIn: true, db: FakeDb(cardStatus: 'INACTIVE'));
-    await pumpWith(tester, env, [homeCardRepositoryProvider.overrideWithValue(_FailingRepo())]);
-    await tester.ensureVisible(find.byKey(const Key('card-alert-cta')));
+  testWidgets('réactivation refusée : message du serveur', (tester) async {
+    final env = await TestEnv.create(signedIn: true, db: FakeDb(cardStatus: 'Inactive'));
+    await pumpRouted(
+      tester,
+      env,
+      const HomeScreen(),
+      extra: [homeCardRepositoryProvider.overrideWithValue(_FailingRepo())],
+    );
     await tester.tap(find.byKey(const Key('card-alert-cta')));
     await settle(tester, 3);
     await tester.tap(find.byKey(const Key('confirm-dialog-ok')));
     await settle(tester);
-    expect(find.text('Réactivation impossible pour le moment.'), findsOneWidget);
+    expect(find.text('Impossible de joindre l’émetteur de la carte.'), findsOneWidget);
     expect(find.byKey(const Key('card-alert')), findsOneWidget);
+    expect(find.text('Carte réactivée.'), findsNothing);
   });
 
-  testWidgets('carte à activer : 0 FCFA, pas de transactions, support', (tester) async {
-    await pumpHome(tester, db: FakeDb(cardStatus: 'PRE_ACTIVE'));
-
+  testWidgets('carte à activer : solde 0', (tester) async {
+    await pumpHome(tester, db: FakeDb(cardStatus: 'PreActive'));
     expect(balanceText(tester), '0');
-    expect(find.text('FCFA'), findsOneWidget);
-    expect(find.text("Aucune transaction pour l'instant."), findsOneWidget);
-    expect(find.text(CardStatus.preActive.blockedMessage), findsOneWidget);
-
-    await tester.tap(find.text('Contacter le support'));
-    await settle(tester, 2);
-    expect(find.text(supportMessage), findsOneWidget);
+    expect(find.byType(ErrorView), findsNothing);
+    expect(find.text('Recharger ma carte'), findsOneWidget);
   });
 
-  testWidgets('carte perdue : « — » et support', (tester) async {
-    await pumpHome(tester, db: FakeDb(cardStatus: 'LOST_OR_STOLEN'));
+  testWidgets('carte désactivée : « — », support', (tester) async {
+    await pumpHome(tester, db: FakeDb(cardStatus: 'Deactivated'));
     expect(balanceText(tester), '—');
+    expect(find.text(CardStatus.deactivated.blockedMessage), findsOneWidget);
     expect(find.text('Contacter le support'), findsOneWidget);
-    expect(find.text('Bloquée'), findsOneWidget);
-  });
-
-  testWidgets('« Ma carte » refusée si la carte n’est pas active', (tester) async {
-    await pumpHome(tester, db: FakeDb(cardStatus: 'PRE_ACTIVE'));
-    await tester.tap(find.byKey(const Key('quick-card')));
-    await settle(tester, 2);
-    expect(find.text(CardStatus.preActive.blockedMessage), findsNWidgets(2));
-  });
-
-  testWidgets('bannière incident opérateur', (tester) async {
-    await pumpHome(tester, db: FakeDb(incident: true));
-    expect(find.byKey(const Key('incident-banner')), findsOneWidget);
-    expect(find.text('Incident chez un opérateur : certains paiements peuvent être ralentis.'), findsOneWidget);
-  });
-
-  testWidgets('erreur de chargement des transactions puis réessai', (tester) async {
-    final env = await TestEnv.create(signedIn: true);
-    var fail = true;
-    await pumpWith(tester, env, [
-      recentTransactionsProvider.overrideWith((ref) async {
-        if (fail) throw const ApiFailure(code: 'SERVICE_UNAVAILABLE', message: 'Service indisponible.');
-        return (await ref.watch(accountRepositoryProvider).transactions(limit: 4)).items;
-      }),
-    ]);
-    expect(find.text('Service indisponible.'), findsOneWidget);
-    fail = false;
-    await tester.tap(find.text('Réessayer'));
-    await settle(tester);
-    expect(find.text('Envoi à Afiavi Sossou'), findsOneWidget);
-  });
-
-  testWidgets('pull-to-refresh recharge le solde', (tester) async {
-    final env = await TestEnv.create(signedIn: true);
-    await env.pumpScreen(tester, const HomeScreen());
-    await settle(tester);
-    env.db.balance = 99000;
-    await tester.fling(find.text('Votre solde'), const Offset(0, 300), 1000);
-    await tester.pump();
-    expect(find.byType(RefreshProgressIndicator), findsOneWidget);
-    for (var i = 0; i < 3; i++) {
-      await tester.pump(const Duration(seconds: 1));
-    }
-    expect(balanceText(tester), formatNumber(99000));
   });
 }

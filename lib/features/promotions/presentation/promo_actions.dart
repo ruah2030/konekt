@@ -6,7 +6,7 @@ import '../../../core/domain/promotion.dart';
 import '../../../core/domain/service_type.dart';
 import '../../../design_system/widgets/feedback.dart';
 import '../../account/presentation/account_providers.dart';
-import '../../payment/presentation/open_service.dart';
+import '../../home/presentation/widgets/home_services.dart';
 
 /// Message affiché quand un lien publicitaire ne peut pas être ouvert.
 const promoLinkErrorMessage = "Impossible d'ouvrir le lien. Réessayez plus tard.";
@@ -20,7 +20,8 @@ Future<void> openPromotion(BuildContext context, WidgetRef ref, Promotion promo)
       showToast(context, 'Service momentanément indisponible. Réessayez plus tard.');
       return;
     }
-    openService(context, ref, type);
+    // Même règle que l'accueil : service grisé au catalogue → motif, sans ouvrir le parcours.
+    openHomeService(context, ref, type);
     return;
   }
   final uri = promoUri(action.target);

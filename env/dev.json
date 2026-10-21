@@ -1,6 +1,7 @@
 {
   "FLAVOR": "dev",
-  "API_BASE_URL": "https://api.dev.konekt.bj",
+  "API_BASE_URL": "https://dev-api.card-connect.bestcash.me",
+  "KONEKT_APP_ID": "konekt-dev",
   "USE_FAKE_API": true,
   "LOG_NETWORK": true
 }

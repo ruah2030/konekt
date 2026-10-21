@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:material_symbols_icons/symbols.dart';
 
 import '../../../../app/router/routes.dart';
 import '../../../../core/domain/promotion.dart';
+import '../../../../core/network/api_failure.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/widgets/activity_tiles.dart';
 import '../../../promotions/presentation/promo_slot.dart';
@@ -44,8 +46,10 @@ class HistoryScreen extends StatelessWidget {
               _HistoryTab(
                 storageKey: 'history-tx',
                 provider: transactionsHistoryProvider,
-                note: "Relevé lu en direct chez l'émetteur, sur le dernier mois.",
-                emptyMessage: 'Aucun mouvement pour le moment.',
+                note: "Relevé lu en direct chez l'émetteur, mois par mois.",
+                emptyMessage: 'Aucun mouvement sur cette période.',
+                loadMoreLabel: 'Charger le mois précédent',
+                autoLoad: false,
                 tileBuilder: (context, tx, divider) => TransactionTile(tx, showDivider: divider),
               ),
               _HistoryTab(
@@ -53,6 +57,7 @@ class HistoryScreen extends StatelessWidget {
                 provider: operationsHistoryProvider,
                 note: 'Paiements lancés depuis Konekt avec leur statut. Touchez pour voir le reçu.',
                 emptyMessage: 'Aucune opération pour le moment.',
+                loadMoreLabel: 'Voir plus',
                 tileBuilder: (context, op, divider) => OperationTile(
                   op,
                   showDivider: divider,
@@ -74,6 +79,8 @@ class _HistoryTab<T> extends ConsumerWidget {
     required this.note,
     required this.emptyMessage,
     required this.tileBuilder,
+    required this.loadMoreLabel,
+    this.autoLoad = true,
   });
 
   final String storageKey;
@@ -81,6 +88,10 @@ class _HistoryTab<T> extends ConsumerWidget {
   final String note;
   final String emptyMessage;
   final Widget Function(BuildContext context, T item, bool showDivider) tileBuilder;
+  final String loadMoreLabel;
+
+  /// Chargement automatique en fin de défilement (opérations) ; sinon bouton seul (mois du relevé).
+  final bool autoLoad;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -118,7 +129,7 @@ class _HistoryTab<T> extends ConsumerWidget {
       ),
       const SliverToBoxAdapter(child: SizedBox(height: 16)),
       if (list == null && async.hasError)
-        section(ErrorView(error: async.error!, onRetry: () => ref.invalidate(provider)))
+        section(_ErrorOrStatus(error: async.error!, onRetry: () => ref.invalidate(provider)))
       else if (list == null)
         const SliverToBoxAdapter(
           child: Padding(
@@ -153,12 +164,21 @@ class _HistoryTab<T> extends ConsumerWidget {
           ),
         ),
       if (list?.loadMoreError != null) section(ErrorView(error: list!.loadMoreError!, onRetry: notifier.loadMore)),
+      if (list != null && list.hasMore && !list.loadingMore && list.loadMoreError == null)
+        section(
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Center(
+              child: TextButton(key: Key('$storageKey-more'), onPressed: notifier.loadMore, child: Text(loadMoreLabel)),
+            ),
+          ),
+        ),
       const SliverToBoxAdapter(child: SizedBox(height: 24)),
     ];
 
     return NotificationListener<ScrollNotification>(
       onNotification: (n) {
-        if (n.metrics.extentAfter < 400 && list != null && list.hasMore && list.loadMoreError == null) {
+        if (autoLoad && n.metrics.extentAfter < 400 && list != null && list.hasMore && list.loadMoreError == null) {
           notifier.loadMore();
         }
         return false;
@@ -166,6 +186,38 @@ class _HistoryTab<T> extends ConsumerWidget {
       child: RefreshIndicator(
         onRefresh: notifier.refresh,
         child: CustomScrollView(key: PageStorageKey(storageKey), slivers: slivers),
+      ),
+    );
+  }
+}
+
+/// Erreur de premier chargement. Relevé refusé (400) pour une carte suspendue, perdue ou désactivée :
+/// on affiche le message de statut du serveur plutôt qu'une erreur.
+class _ErrorOrStatus extends StatelessWidget {
+  const _ErrorOrStatus({required this.error, required this.onRetry});
+  final Object error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final f = ApiFailure.from(error);
+    if (f.statusCode != 400 || f.code != ErrorCodes.requestRejected) return ErrorView(error: error, onRetry: onRetry);
+    return Container(
+      key: const Key('history-card-status'),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: KColors.surface, borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Symbols.info_rounded, size: 22, color: KColors.warning),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              f.message,
+              style: const TextStyle(fontSize: 14, height: 1.5, color: Color(0xFF334155), fontWeight: FontWeight.w500),
+            ),
+          ),
+        ],
       ),
     );
   }

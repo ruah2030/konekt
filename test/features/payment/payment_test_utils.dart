@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:konekt/app/router/routes.dart';
+import 'package:dio/dio.dart';
 import 'package:konekt/core/domain/service_type.dart';
+import 'package:konekt/core/network/fake/fake_api.dart';
 import 'package:konekt/core/network/fake/fake_db.dart';
 import 'package:konekt/design_system/theme/app_theme.dart';
 import 'package:konekt/features/history/presentation/screens/history_screen.dart';
@@ -27,6 +29,36 @@ class ClockDb extends FakeDb {
   DateTime now() => clock;
 
   void advance(Duration d) => clock = clock.add(d);
+}
+
+/// Appels directs au faux backend (tests des handlers), avec un jeton de session valide.
+class FakeClient {
+  FakeClient(this.db) : api = FakeApi(db: db, latency: Duration.zero) {
+    _token = db.issueTokens().session;
+  }
+
+  final FakeDb db;
+  final FakeApi api;
+  late final String _token;
+
+  Future<FakeResponse> call(String method, String path, {Object? body, Map<String, dynamic>? query}) => api.handle(
+    RequestOptions(
+      method: method,
+      path: path,
+      data: body,
+      queryParameters: query ?? const {},
+      headers: {'Authorization': 'Bearer $_token'},
+    ),
+  );
+
+  Future<FakeResponse> post(String path, [Object? body]) => call('POST', path, body: body);
+  Future<FakeResponse> get(String path, [Map<String, dynamic>? query]) => call('GET', path, query: query);
+}
+
+extension FakeResponseRead on FakeResponse {
+  Map<String, dynamic> get json => Map<String, dynamic>.from(body! as Map);
+  String? get code => json['code'] as String?;
+  String? get message => json['message'] as String?;
 }
 
 /// Routeur minimal avec les écrans du parcours de paiement et l'historique.

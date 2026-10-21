@@ -6,11 +6,14 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../../../../app/router/routes.dart';
 import '../../../../core/domain/card.dart';
 import '../../../../core/domain/service_type.dart';
+import '../../../../core/network/api_failure.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
 import '../../../account/presentation/widgets/activity_tiles.dart';
-import '../../../payment/presentation/open_service.dart';
+import '../../../auth/presentation/providers/auth_controller.dart';
+import '../../../history/presentation/providers/history_providers.dart';
 import '../../data/home_card_repository.dart';
+import 'home_services.dart';
 
 const supportMessage = 'Support Konekt : +229 21 00 00 00 (lun.–sam., 8h–20h)';
 
@@ -35,19 +38,20 @@ class HomeSectionTitle extends StatelessWidget {
   );
 }
 
-/// Bannière d'incident opérateur (aucune si l'appel échoue).
+/// Bannière d'incident (`GET /status`, `overall != operational`) ; aucune si l'appel échoue.
 class HomeIncidents extends ConsumerWidget {
   const HomeIncidents({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final incidents = ref.watch(incidentsProvider).value ?? const [];
-    if (incidents.isEmpty) return const SizedBox.shrink();
-    return Padding(padding: const EdgeInsets.only(bottom: 24), child: IncidentBanner(incidents.first.message));
+    final status = ref.watch(platformStatusProvider).value;
+    if (status == null || !status.hasIncident) return const SizedBox.shrink();
+    return Padding(padding: const EdgeInsets.only(bottom: 24), child: IncidentBanner(status.message));
   }
 }
 
-/// Alerte quand la carte n'est pas active : réactivation (suspendue) ou support (autres statuts).
+/// Alerte quand la carte n'est pas active : réactivation (suspendue), recharge (à activer)
+/// ou support (perdue/volée, désactivée).
 class CardStatusAlert extends ConsumerWidget {
   const CardStatusAlert({super.key});
 
@@ -61,12 +65,17 @@ class CardStatusAlert extends ConsumerWidget {
       color: KColors.successDark,
     );
     if (!ok) return;
-    final result = await ref.read(homeCardRepositoryProvider).reactivate();
+    final cardId = ref.read(cardSessionProvider)?.cardCustomerId;
+    if (cardId == null) return;
+    final result = await ref.read(homeCardRepositoryProvider).reactivate(cardId);
     if (!context.mounted) return;
     result.when(
       ok: (_) {
         ref.read(cardProvider.notifier).setStatus(CardStatus.active);
-        ref.invalidate(balanceProvider);
+        ref
+          ..invalidate(balanceProvider)
+          ..invalidate(recentTransactionsProvider);
+        invalidateHistory(ref);
         showToast(context, 'Carte réactivée.');
       },
       err: (f) => showToast(context, f.message),
@@ -77,7 +86,17 @@ class CardStatusAlert extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(cardStatusProvider);
     if (status == null || status.isActive) return const SizedBox.shrink();
-    final inactive = status == CardStatus.inactive;
+    final (label, onPressed) = switch (status) {
+      CardStatus.inactive => ('Réactiver ma carte', () => _reactivate(context, ref)),
+      // Une carte à activer s'active par une première recharge (seul crédit accepté).
+      CardStatus.preActive => (
+        'Recharger ma carte',
+        () => serviceAvailable(ref, ServiceType.topup)
+            ? context.push(Routes.service(ServiceType.topup))
+            : openHomeService(context, ref, ServiceType.topup),
+      ),
+      _ => ('Contacter le support', () => showToast(context, supportMessage)),
+    };
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
       child: Container(
@@ -115,8 +134,8 @@ class CardStatusAlert extends ConsumerWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
                 ),
-                onPressed: inactive ? () => _reactivate(context, ref) : () => showToast(context, supportMessage),
-                child: Text(inactive ? 'Réactiver ma carte' : 'Contacter le support'),
+                onPressed: onPressed,
+                child: Text(label),
               ),
             ),
           ],
@@ -126,7 +145,8 @@ class CardStatusAlert extends ConsumerWidget {
   }
 }
 
-/// Catalogue « Payer et recharger » (grille de 3 colonnes).
+/// Catalogue « Payer et recharger » (grille de 3 colonnes). Les services `available: false` de
+/// `GET /catalog/services` sont grisés (pas masqués) ; au tap, leur motif s'affiche.
 class ServiceCatalog extends ConsumerWidget {
   const ServiceCatalog({super.key});
 
@@ -153,9 +173,9 @@ class ServiceCatalog extends ConsumerWidget {
                     label: _items[j].$2,
                     icon: _items[j].$3,
                     tint: kindTint(_items[j].$4),
-                    soon: _items[j].$1 == ServiceType.tv,
-                    opacity: _items[j].$1 == ServiceType.tv ? 0.55 : (active ? 1 : 0.4),
-                    onTap: () => openService(context, ref, _items[j].$1),
+                    unavailable: !serviceAvailable(ref, _items[j].$1),
+                    opacity: active && serviceAvailable(ref, _items[j].$1) ? 1 : 0.4,
+                    onTap: () => openHomeService(context, ref, _items[j].$1),
                   )
                 : const SizedBox.shrink(),
           ),
@@ -188,7 +208,7 @@ class _CatalogTile extends StatelessWidget {
     required this.label,
     required this.icon,
     required this.tint,
-    required this.soon,
+    required this.unavailable,
     required this.opacity,
     required this.onTap,
   });
@@ -196,7 +216,7 @@ class _CatalogTile extends StatelessWidget {
   final String label;
   final IconData icon;
   final ({Color bg, Color fg}) tint;
-  final bool soon;
+  final bool unavailable;
   final double opacity;
   final VoidCallback onTap;
 
@@ -232,10 +252,10 @@ class _CatalogTile extends StatelessWidget {
                     color: KColors.primary,
                   ),
                 ),
-                if (soon) ...[
+                if (unavailable) ...[
                   const SizedBox(height: 2),
                   const Text(
-                    'Bientôt',
+                    'Indisponible',
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFFB45309)),
                   ),
                 ],
@@ -246,6 +266,11 @@ class _CatalogTile extends StatelessWidget {
       ),
     ),
   );
+}
+
+bool _statementRefused(Object error) {
+  final f = ApiFailure.from(error);
+  return f.statusCode == 400 && f.code == ErrorCodes.requestRejected;
 }
 
 /// « Transactions récentes » : 4 derniers mouvements + « Tout voir ».
@@ -269,6 +294,17 @@ class RecentTransactions extends ConsumerWidget {
               ),
             )
           : Column(children: [for (var i = 0; i < items.length; i++) TransactionTile(items[i], showDivider: i > 0)]);
+    } else if (txs.hasError && _statementRefused(txs.error!)) {
+      // Carte suspendue, perdue ou désactivée : relevé non lisible (400), l'alerte de statut explique déjà.
+      body = const Padding(
+        key: Key('recent-unavailable'),
+        padding: EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+        child: Text(
+          'Mouvements indisponibles tant que la carte n’est pas active.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 14, color: KColors.onSurfaceVariant),
+        ),
+      );
     } else if (txs.hasError) {
       body = ErrorView(error: txs.error!, onRetry: () => ref.invalidate(recentTransactionsProvider));
     } else {

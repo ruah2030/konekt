@@ -1,70 +1,119 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../../core/domain/operation.dart';
-import '../../../../core/domain/service_type.dart';
 import '../../../../core/network/api_failure.dart';
-import '../../../../core/utils/money_format.dart';
-import '../../../../core/utils/validators.dart';
-import '../../../account/presentation/account_providers.dart';
+import '../../../auth/presentation/providers/auth_controller.dart';
 import '../../data/payment_repository.dart';
 import '../../domain/payment_models.dart';
-import '../../domain/service_config.dart';
 
-/// État du parcours de paiement : formulaire → devis → PIN → traitement → reçu.
+/// Horloge du parcours (surchargeable en test).
+final paymentClockProvider = Provider<DateTime Function()>((ref) => DateTime.now);
+
+/// Échec d'un devis : erreur à afficher et contrôles en échec (`checks[].passed:false`).
+class QuoteFailure {
+  const QuoteFailure(this.failure, [this.failedChecks = const []]);
+  final ApiFailure failure;
+  final List<QuoteCheck> failedChecks;
+}
+
+/// Issue de la saisie du code secret / code OTP.
+enum SecretOutcome {
+  /// Paiement lancé : écran de traitement.
+  submitted,
+
+  /// Erreur affichée sur l'écran (PIN faux, verrou…), l'utilisateur peut ressaisir.
+  retry,
+
+  /// Le devis n'est plus utilisable : en redemander un.
+  requote,
+
+  /// L'opération a été annulée (code épuisé ou expiré) : recommencer.
+  restart,
+}
+
+/// État du parcours : formulaire → devis → PIN/OTP → traitement (suivi) → reçu.
 class PaymentFlowState {
   const PaymentFlowState({
-    this.service,
-    this.form = const {},
-    this.option,
+    this.request,
     this.quote,
+    this.reference,
+    this.execution,
     this.operation,
     this.quoting = false,
     this.submitting = false,
     this.quoteError,
     this.pinError,
-    this.pinLockedUntil,
+    this.codeError,
+    this.review,
+    this.needsRequote = false,
+    this.restartRequired = false,
+    this.trackingSince,
   });
 
-  final ServiceType? service;
-  final Map<String, String> form;
-  final String? option;
-  final Quote? quote;
+  final PaymentRequest? request;
+  final PaymentQuote? quote;
+
+  /// Identifiant de la tentative : `reference` (catalogue) ou `requestId` (opération carte).
+  /// Réutilisé tel quel pour un rejeu volontaire (réponse perdue), jamais pour un nouveau devis.
+  final String? reference;
+  final ExecutionResult? execution;
+
+  /// Dernier état lu de l'opération (`GET /cards/operations/:id`).
   final Operation? operation;
-
-  /// Devis en cours de calcul.
   final bool quoting;
-
-  /// Exécution (PIN) en cours d'envoi.
   final bool submitting;
-
-  /// Erreur lors d'un nouveau devis demandé depuis l'écran récapitulatif.
   final ApiFailure? quoteError;
   final ApiFailure? pinError;
-  final DateTime? pinLockedUntil;
 
-  ServiceConfig? get config => service == null ? null : serviceConfig(service!);
+  /// Erreur de saisie du code B-MO.
+  final ApiFailure? codeError;
 
-  bool isPinLocked(DateTime now) => pinLockedUntil != null && now.isBefore(pinLockedUntil!);
+  /// Sort incertain (500 « NE LA RELANCEZ PAS », incident) : écran « en vérification ».
+  final ApiFailure? review;
+  final bool needsRequote;
+  final bool restartRequired;
+  final DateTime? trackingSince;
+
+  /// Opération à suivre.
+  String? get operationId => execution?.operationId ?? (review != null ? quote?.operationId : null);
+
+  /// `awaiting` courant (exécution, puis suivi).
+  String? get awaiting {
+    final op = operation;
+    if (op != null) return op.status == OperationStatus.pending ? op.awaiting : null;
+    return execution?.awaiting;
+  }
 
   PaymentFlowState copyWith({
-    Quote? quote,
-    Operation? operation,
+    PaymentQuote? Function()? quote,
+    String? Function()? reference,
+    ExecutionResult? Function()? execution,
+    Operation? Function()? operation,
     bool? quoting,
     bool? submitting,
     ApiFailure? Function()? quoteError,
     ApiFailure? Function()? pinError,
-    DateTime? Function()? pinLockedUntil,
+    ApiFailure? Function()? codeError,
+    ApiFailure? Function()? review,
+    bool? needsRequote,
+    bool? restartRequired,
+    DateTime? Function()? trackingSince,
   }) => PaymentFlowState(
-    service: service,
-    form: form,
-    option: option,
-    quote: quote ?? this.quote,
-    operation: operation ?? this.operation,
+    request: request,
+    quote: quote == null ? this.quote : quote(),
+    reference: reference == null ? this.reference : reference(),
+    execution: execution == null ? this.execution : execution(),
+    operation: operation == null ? this.operation : operation(),
     quoting: quoting ?? this.quoting,
     submitting: submitting ?? this.submitting,
     quoteError: quoteError == null ? this.quoteError : quoteError(),
     pinError: pinError == null ? this.pinError : pinError(),
-    pinLockedUntil: pinLockedUntil == null ? this.pinLockedUntil : pinLockedUntil(),
+    codeError: codeError == null ? this.codeError : codeError(),
+    review: review == null ? this.review : review(),
+    needsRequote: needsRequote ?? this.needsRequote,
+    restartRequired: restartRequired ?? this.restartRequired,
+    trackingSince: trackingSince == null ? this.trackingSince : trackingSince(),
   );
 }
 
@@ -76,113 +125,238 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
   PaymentFlowState build() => const PaymentFlowState();
 
   PaymentRepository get _repo => ref.read(paymentRepositoryProvider);
+  DateTime _now() => ref.read(paymentClockProvider)();
+  String _uuid() => const Uuid().v4();
 
-  /// Validations locales (messages de la maquette, `requestQuote`). `null` si tout est valide.
-  ApiFailure? validate(ServiceConfig config, Map<String, String> form, String? option) {
-    ApiFailure fail(String code, String message) => ApiFailure.local(code, message);
-    final opt = config.option;
-    if (opt != null && option == null) {
-      return fail(ErrorCodes.validationFailed, 'Choisissez : ${opt.label.toLowerCase()}.');
-    }
-    for (final f in config.fields) {
-      if ((form[f.key] ?? '').trim().isEmpty) {
-        return fail(ErrorCodes.validationFailed, '${f.label} : champ obligatoire.');
-      }
-    }
-    final target = form['target'];
-    final sessionCard = ref.read(cardProvider).value?.id;
-    if (target != null && sessionCard != null && Validators.digitsOnly(target) == sessionCard) {
-      return fail(ErrorCodes.requestRejected, 'La carte bénéficiaire doit être différente de la vôtre.');
-    }
-    final msisdn = form['msisdn'];
-    if (msisdn != null && !Validators.isMsisdn(msisdn)) {
-      return fail(ErrorCodes.requestRejected, 'Numéro de téléphone invalide.');
-    }
-    final meter = form['meter'];
-    if (meter != null && !Validators.isMeter(meter)) {
-      return fail(ErrorCodes.requestRejected, 'Numéro de compteur : chiffres uniquement.');
-    }
-    if (!config.imposedPrice && config.hasAmountField) {
-      final amount = parseAmount(form[ServiceField.amountKey] ?? '');
-      if (amount == null || amount < 100) return fail(ErrorCodes.validationFailed, 'Montant minimum : 100 FCFA.');
-      if (amount > 1000000) return fail(ErrorCodes.validationFailed, 'Montant maximum : 1 000 000 FCFA.');
-    }
-    return null;
+  /// Demande un devis (catalogue) ou initie l'opération carte (frais arrêtés). `null` si réussi.
+  Future<QuoteFailure?> requestQuote(PaymentRequest request) async {
+    await abandon();
+    state = PaymentFlowState(request: request, quoting: true);
+    final failure = await _quote(request);
+    if (failure != null) state = state.copyWith(quoting: false);
+    return failure;
   }
 
-  Map<String, dynamic> _request(ServiceConfig config, Map<String, String> form, String? option) => {
-    'service': config.type.id,
-    for (final f in config.fields)
-      if (f.isAmount)
-        f.key: parseAmount(form[f.key] ?? '')
-      else
-        f.key: f.kind == FieldKind.numeric ? Validators.digitsOnly(form[f.key] ?? '') : (form[f.key] ?? '').trim(),
-    if (config.option != null && option != null) config.option!.apiKey: option,
-  };
-
-  /// Valide le formulaire puis demande le devis. Renvoie l'erreur à afficher, ou `null` en cas de succès.
-  Future<ApiFailure?> requestQuote(ServiceType service, Map<String, String> form, String? option) async {
-    final config = serviceConfig(service);
-    final invalid = validate(config, form, option);
-    if (invalid != null) return invalid;
-    state = PaymentFlowState(service: service, form: Map.unmodifiable(form), option: option, quoting: true);
+  Future<QuoteFailure?> _quote(PaymentRequest request) async {
     try {
-      final quote = await _repo.requestQuote(_request(config, form, option));
-      state = state.copyWith(quote: quote, quoting: false);
+      final reference = _uuid();
+      var quote = request.path == PaymentPath.cardOperation
+          ? await _repo.initiate(request, requestId: reference, now: _now())
+          : await _repo.catalogQuote(request);
+      if (!quote.feasible) {
+        return QuoteFailure(
+          ApiFailure.local(ErrorCodes.requestRejected, quote.reason ?? 'Opération impossible.'),
+          quote.failedChecks,
+        );
+      }
+      if (quote.isCardOperation && quote.targetLast4 == null) {
+        // Retrait Mobile Money : nom du bénéficiaire retenu (vérifié chez B-MO) lu sur l'opération.
+        try {
+          final op = await _repo.operation(quote.operationId!);
+          quote = quote.withBeneficiary(op.parties.where((p) => p.role == 'BENEFICIARY').firstOrNull);
+        } catch (_) {
+          // Affichage seulement : le récapitulatif reprend la saisie.
+        }
+      }
+      state = PaymentFlowState(request: request, quote: quote, reference: reference);
       return null;
     } catch (e) {
-      state = state.copyWith(quoting: false);
-      return ApiFailure.from(e);
+      return QuoteFailure(ApiFailure.from(e));
     }
   }
 
-  /// Nouveau devis avec le même formulaire (prix expiré).
+  /// Nouveau devis avec la même demande (prix expiré, devis consommé). L'opération carte en
+  /// attente est annulée avant d'en initier une nouvelle (nouveau `requestId`).
   Future<bool> requote() async {
-    final service = state.service;
-    if (service == null) return false;
-    final config = serviceConfig(service);
+    final request = state.request;
+    if (request == null) return false;
+    await abandon();
     state = state.copyWith(quoting: true, quoteError: () => null);
-    try {
-      final quote = await _repo.requestQuote(_request(config, state.form, state.option));
-      state = PaymentFlowState(service: service, form: state.form, option: state.option, quote: quote);
-      return true;
-    } catch (e) {
-      state = state.copyWith(quoting: false, quoteError: () => ApiFailure.from(e));
+    final failure = await _quote(request);
+    if (failure != null) {
+      state = state.copyWith(quoting: false, quoteError: () => failure.failure);
       return false;
     }
+    return true;
   }
 
-  /// Exécute le paiement avec le code secret. Renvoie `true` si l'opération est lancée.
-  Future<bool> submitPin(String pin) async {
-    final quote = state.quote;
-    if (quote == null || state.submitting) return false;
+  /// Abandon d'une opération carte initiée et non conclue : `DELETE /cards/operations/:id`.
+  Future<void> abandon() async {
+    final q = state.quote;
+    if (q == null || !q.isCardOperation || state.execution != null || state.review != null) return;
+    state = state.copyWith(quote: () => null);
+    try {
+      await _repo.cancel(q.operationId!);
+    } catch (_) {
+      // Déjà conclue, annulée ou introuvable : rien à faire.
+    }
+  }
+
+  /// Confirme avec le code secret (catalogue par carte, `execute`) ou le code OTP (`confirm`).
+  Future<SecretOutcome> submitSecret(String code) async {
+    final q = state.quote;
+    final request = state.request;
+    if (q == null || request == null || state.submitting) return SecretOutcome.retry;
+    if (!q.isCardOperation && q.isExpired(_now())) {
+      // PIN vérifié avant le devis côté serveur : ne pas risquer un essai pour un devis périmé.
+      state = state.copyWith(needsRequote: true);
+      return SecretOutcome.requote;
+    }
     state = state.copyWith(submitting: true, pinError: () => null);
     try {
-      final op = await _repo.execute(quoteId: quote.quoteId, pin: pin);
-      state = state.copyWith(operation: op, submitting: false, pinLockedUntil: () => null);
-      return true;
+      final result = switch (q.path) {
+        PaymentPath.cardOperation =>
+          q.requiresConfirmation
+              ? await _repo.confirmOtp(q.operationId!, code)
+              : await _repo.execute(q.operationId!, code),
+        _ => await _repo.catalogConfirm(request: request, quoteId: q.quoteId!, reference: state.reference!, pin: code),
+      };
+      _executed(result);
+      return SecretOutcome.submitted;
     } catch (e) {
-      final failure = ApiFailure.from(e);
-      final lockedUntil = failure.details['lockedUntil'] as String?;
+      return _secretFailed(ApiFailure.from(e));
+    }
+  }
+
+  /// Confirmation sans PIN (catalogue payé par un portefeuille mobile).
+  Future<ApiFailure?> confirmExternal() async {
+    final q = state.quote;
+    final request = state.request;
+    if (q == null || request == null || state.submitting) return null;
+    state = state.copyWith(submitting: true, quoteError: () => null);
+    try {
+      _executed(await _repo.catalogConfirm(request: request, quoteId: q.quoteId!, reference: state.reference!));
+      return null;
+    } catch (e) {
+      final f = ApiFailure.from(e);
+      if (_uncertain(f)) {
+        state = state.copyWith(submitting: false, review: () => f, trackingSince: _now);
+        return null;
+      }
+      state = state.copyWith(submitting: false, quoteError: () => f, needsRequote: _burnsQuote(f));
+      return f;
+    }
+  }
+
+  void _executed(ExecutionResult r) {
+    state = state.copyWith(
+      submitting: false,
+      execution: () => r,
+      pinError: () => null,
+      review: () => null,
+      trackingSince: _now,
+    );
+  }
+
+  /// 5xx ou réponse perdue : le sort est incertain, on suit l'opération sans jamais relancer.
+  bool _uncertain(ApiFailure f) =>
+      (f.statusCode ?? 0) >= 500 || f.code == ErrorCodes.internalError || f.code == 'FUNDING_UNCERTAIN';
+
+  /// Le devis est consommé ou périmé : il faut en redemander un.
+  bool _burnsQuote(ApiFailure f) =>
+      f.code == ErrorCodes.requestRejected ||
+      f.code == ErrorCodes.dailyAmountLimit ||
+      f.code == ErrorCodes.dailyOperationLimit ||
+      f.code == ErrorCodes.notFound;
+
+  Future<SecretOutcome> _secretFailed(ApiFailure f) async {
+    final q = state.quote!;
+    if (_uncertain(f)) {
+      state = state.copyWith(submitting: false, review: () => f, trackingSince: _now);
+      return SecretOutcome.submitted;
+    }
+    if (f.code == ErrorCodes.network || f.code == ErrorCodes.timeout) {
+      // Réponse perdue : un nouvel envoi réutilise la même référence (idempotent).
       state = state.copyWith(
         submitting: false,
-        pinError: () => failure,
-        pinLockedUntil: lockedUntil == null ? null : () => DateTime.parse(lockedUntil).toLocal(),
+        pinError: () => ApiFailure(
+          code: f.code,
+          message:
+              'La connexion a été interrompue : le paiement a peut-être abouti. Ressaisissez votre code pour '
+              'vérifier — la même demande sera renvoyée, sans risque de double paiement.',
+          ref: f.ref,
+        ),
       );
-      return false;
+      return SecretOutcome.retry;
     }
+    if (q.isCardOperation && f.code == ErrorCodes.requestRejected) {
+      // Relire l'opération : déjà effectuée, annulée (code épuisé) ou toujours en attente ?
+      try {
+        final op = await _repo.operation(q.operationId!, sessionCardCustomerId: _cardId());
+        if (op.status == OperationStatus.cancelled || op.status == OperationStatus.expired) {
+          state = state.copyWith(submitting: false, pinError: () => f, restartRequired: true, operation: () => op);
+          return SecretOutcome.restart;
+        }
+        if (op.status != OperationStatus.pending && op.status != OperationStatus.pendingApproval) {
+          state = state.copyWith(
+            submitting: false,
+            execution: () => ExecutionResult(operationId: op.id, status: op.status, completed: op.status.isSuccess),
+            operation: () => op,
+            trackingSince: _now,
+          );
+          return SecretOutcome.submitted;
+        }
+      } catch (_) {
+        // Lecture impossible : on affiche l'erreur d'origine.
+      }
+      final expiredCode = q.requiresConfirmation && f.message.contains('expiré');
+      state = state.copyWith(submitting: false, pinError: () => f, restartRequired: expiredCode);
+      return expiredCode ? SecretOutcome.restart : SecretOutcome.retry;
+    }
+    final burns = !q.isCardOperation && _burnsQuote(f);
+    state = state.copyWith(submitting: false, pinError: () => f, needsRequote: burns);
+    return SecretOutcome.retry;
   }
 
   void clearPinError() {
-    if (state.pinError != null) state = state.copyWith(pinError: () => null);
+    if (state.pinError != null || state.needsRequote || state.restartRequired) {
+      state = state.copyWith(pinError: () => null, needsRequote: false, restartRequired: false);
+    }
   }
 
-  /// Met à jour l'opération en cours (polling de l'écran de traitement).
+  /// Saisie du code B-MO (`funding/confirm`). `null` si accepté.
+  Future<ApiFailure?> submitFundingCode(String code) async {
+    final id = state.operationId;
+    if (id == null || state.submitting) return null;
+    state = state.copyWith(submitting: true, codeError: () => null);
+    try {
+      final r = await _repo.fundingConfirm(id, code);
+      state = state.copyWith(submitting: false, execution: () => r, operation: () => null);
+      await refreshOperation();
+      return null;
+    } catch (e) {
+      final f = ApiFailure.from(e);
+      state = state.copyWith(submitting: false, codeError: () => f);
+      if (f.code == 'CONFIRMATION_ATTEMPTS_EXHAUSTED' || f.code == 'FUNDING_CLOSED') await refreshOperation();
+      return f;
+    }
+  }
+
+  /// Renonce au paiement B-MO (`funding/cancel`) puis relit l'opération (peut être `SUCCESS`).
+  Future<ApiFailure?> cancelFunding() async {
+    final id = state.operationId;
+    if (id == null || state.submitting) return null;
+    state = state.copyWith(submitting: true, codeError: () => null);
+    try {
+      final r = await _repo.fundingCancel(id);
+      state = state.copyWith(submitting: false, execution: () => r);
+      await refreshOperation();
+      return null;
+    } catch (e) {
+      final f = ApiFailure.from(e);
+      state = state.copyWith(submitting: false, codeError: () => f);
+      return f;
+    }
+  }
+
+  String? _cardId() => ref.read(cardSessionProvider)?.cardCustomerId;
+
+  /// Relit l'opération en cours (suivi de l'écran de traitement).
   Future<Operation?> refreshOperation() async {
-    final op = state.operation;
-    if (op == null) return null;
-    final fresh = await _repo.track(op.id);
-    state = state.copyWith(operation: fresh);
+    final id = state.operationId;
+    if (id == null) return null;
+    final fresh = await _repo.operation(id, sessionCardCustomerId: _cardId());
+    state = state.copyWith(operation: () => fresh);
     return fresh;
   }
 

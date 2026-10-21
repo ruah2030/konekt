@@ -21,6 +21,16 @@ final sessionExpiredProvider = Provider<StreamController<void>>((ref) {
 
 final appVersionProvider = Provider<String>((ref) => '2.0.0');
 
+/// `CardKonekt/2.0.0 (Android)` — recommandé par le guide (§1.3).
+final userAgentProvider = Provider<String>((ref) {
+  final os = kIsWeb
+      ? 'Web'
+      : defaultTargetPlatform == TargetPlatform.iOS
+      ? 'iOS'
+      : 'Android';
+  return 'CardKonekt/${ref.watch(appVersionProvider)} ($os)';
+});
+
 /// Faux backend partagé (mode `USE_FAKE_API`) avec le jeu de démo. Surchargé dans les tests.
 final fakeApiProvider = Provider<FakeApi>((ref) {
   final prefs = ref.watch(appPrefsProvider);
@@ -34,14 +44,15 @@ final dioProvider = Provider<Dio>((ref) {
   final options = BaseOptions(
     baseUrl: Env.apiBaseUrl,
     connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 30),
+    // Les confirmations de paiement appellent l'émetteur dans la requête : délai long (≥ 60 s, §4.6).
+    receiveTimeout: const Duration(seconds: 75),
     contentType: Headers.jsonContentType,
     responseType: ResponseType.json,
   );
 
   Dio build() {
     final d = Dio(options);
-    d.interceptors.add(RequestHeadersInterceptor(store, appVersion: ref.watch(appVersionProvider)));
+    d.interceptors.add(RequestHeadersInterceptor(userAgent: ref.watch(userAgentProvider)));
     return d;
   }
 

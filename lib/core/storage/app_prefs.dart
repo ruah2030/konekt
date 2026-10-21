@@ -16,6 +16,12 @@ class AppPrefs {
   bool get hideBalance => _p.getBool(_hideBalance) ?? false;
   Future<void> setHideBalance(bool v) => _p.setBool(_hideBalance, v);
 
+  /// Code d'invitation marchand (transmis à `login/confirm` comme `merchantReferralCode`).
+  static const _referralCode = 'merchant_referral_code';
+  String? get referralCode => _p.getString(_referralCode);
+  Future<void> setReferralCode(String? code) =>
+      code == null ? _p.remove(_referralCode) : _p.setString(_referralCode, code);
+
   /// Faux backend uniquement : code secret de démo conservé entre deux lancements.
   static const _fakePin = 'fake_backend_pin';
   String? get fakePin => _p.getString(_fakePin);

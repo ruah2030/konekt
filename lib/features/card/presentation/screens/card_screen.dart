@@ -8,10 +8,12 @@ import '../../../../core/domain/card.dart';
 import '../../../../core/network/api_failure.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
-import '../../data/card_repository.dart';
+import '../../../auth/presentation/providers/auth_controller.dart';
+import '../../domain/card_models.dart';
+import '../providers/card_status_actions.dart';
 import '../widgets/virtual_card_view.dart';
 
-/// Changement de statut demandé depuis « Ma carte » (textes de la maquette, askStatus).
+/// Changement de statut demandé depuis « Ma carte ».
 enum CardStatusChange {
   suspend(
     title: 'Suspendre ma carte ?',
@@ -19,7 +21,6 @@ enum CardStatusChange {
     cta: 'Suspendre',
     icon: Symbols.pause_circle_rounded,
     color: KColors.primary,
-    to: CardStatus.inactive,
     message: 'Carte suspendue.',
   ),
   reactivate(
@@ -28,17 +29,17 @@ enum CardStatusChange {
     cta: 'Réactiver',
     icon: Symbols.play_circle_rounded,
     color: KColors.successDark,
-    to: CardStatus.active,
     message: 'Carte réactivée.',
   ),
   lost(
     title: 'Déclarer perdue ou volée ?',
-    body: 'Ce blocage est définitif. Vos fonds ne sont pas perdus : le support pourra les transférer sur une nouvelle carte.',
-    cta: 'Déclarer perdue ou volée',
+    body:
+        'Cette déclaration est DÉFINITIVE : votre carte ne pourra plus jamais être utilisée, même si vous la '
+        'retrouvez.\n\nVos fonds ne sont pas perdus : le support pourra les transférer sur une nouvelle carte.',
+    cta: 'Oui, déclarer perdue',
     icon: Symbols.report_rounded,
     color: KColors.error,
-    to: CardStatus.lostOrStolen,
-    message: 'Carte bloquée. Une alerte a été envoyée sur tous vos canaux.',
+    message: 'Carte déclarée perdue. Vos fonds ne sont pas perdus : contactez le support pour les récupérer.',
   );
 
   const CardStatusChange({
@@ -47,7 +48,6 @@ enum CardStatusChange {
     required this.cta,
     required this.icon,
     required this.color,
-    required this.to,
     required this.message,
   });
 
@@ -56,11 +56,15 @@ enum CardStatusChange {
   final String cta;
   final IconData icon;
   final Color color;
-  final CardStatus to;
   final String message;
 }
 
-/// Onglet « Ma carte » : visuel, infos, actions de statut et affichage sécurisé.
+/// Texte ajouté à l'avertissement quand la carte est suspendue : l'API impose deux appels
+/// (réactivation, puis déclaration de perte — point ouvert n°7).
+const lostFromSuspendedNotice =
+    'Votre carte est suspendue : elle sera d’abord réactivée un court instant, puis aussitôt déclarée perdue.';
+
+/// Onglet « Ma carte » : visuel, infos, actions de statut (guide §13) et accès à l'affichage sécurisé (§14).
 class CardScreen extends ConsumerStatefulWidget {
   const CardScreen({super.key});
 
@@ -71,27 +75,27 @@ class CardScreen extends ConsumerStatefulWidget {
 class _CardScreenState extends ConsumerState<CardScreen> {
   bool _busy = false;
 
-  Future<void> _changeStatus(CardStatusChange change) async {
+  /// L'API n'exige ni PIN ni code pour changer l'état (point ouvert n°6) : confirmation explicite obligatoire.
+  Future<void> _changeStatus(CardStatusChange change, CardStatus current) async {
     if (_busy) return;
+    final twoSteps = change == CardStatusChange.lost && current == CardStatus.inactive;
     final ok = await showConfirmDialog(
       context,
       title: change.title,
-      body: change.body,
+      body: twoSteps ? '${change.body}\n\n$lostFromSuspendedNotice' : change.body,
       confirmLabel: change.cta,
       icon: change.icon,
       color: change.color,
     );
     if (!ok || !mounted) return;
     setState(() => _busy = true);
+    final actions = ref.read(cardStatusActionsProvider);
     try {
-      final repo = ref.read(cardRepositoryProvider);
-      final card = await switch (change) {
-        CardStatusChange.suspend => repo.suspend(),
-        CardStatusChange.reactivate => repo.reactivate(),
-        CardStatusChange.lost => repo.declareLost(),
+      await switch (change) {
+        CardStatusChange.suspend => actions.suspend(),
+        CardStatusChange.reactivate => actions.reactivate(),
+        CardStatusChange.lost => actions.declareLost(current: current),
       };
-      ref.read(cardProvider.notifier).setStatus(card.status);
-      refreshAccountFromWidget(ref);
       if (mounted) showToast(context, change.message);
     } catch (e) {
       if (mounted) showToast(context, ApiFailure.from(e).message);
@@ -142,8 +146,9 @@ class _CardScreenState extends ConsumerState<CardScreen> {
 
   List<Widget> _content(CardInfo card) {
     final status = card.status;
-    final active = status.isActive;
-    void blocked() => showToast(context, status.blockedMessage);
+    final session = ref.watch(cardSessionProvider);
+    // PreActive et Inactive restent affichables ; LostOrStolen / Deactivated non (§14.2).
+    final canDisplay = !status.isTerminal;
 
     return [
       VirtualCardView(card: card),
@@ -151,9 +156,27 @@ class _CardScreenState extends ConsumerState<CardScreen> {
       InfoRowsCard([
         InfoRow('Gamme', card.product, key: const Key('card-info-product')),
         InfoRow('Émetteur', card.issuer, key: const Key('card-info-issuer')),
-        InfoRow('Identifiant', card.id, key: const Key('card-info-id')),
+        if (card.holderName.isNotEmpty) InfoRow('Titulaire', card.holderName, key: const Key('card-info-holder')),
+        InfoRow('Statut', status.label, key: const Key('card-info-status')),
+        InfoRow('Identifiant', session?.cardCustomerId ?? card.cardCustomerId, key: const Key('card-info-id')),
       ]),
       const SizedBox(height: 20),
+      if (status.isTerminal) ...[
+        _StatusNotice(
+          key: const Key('card-terminal-notice'),
+          message: status.blockedMessage,
+          action: TextButton(
+            key: const Key('card-support'),
+            onPressed: () => showToast(context, cardSupportMessage),
+            child: const Text('Contacter le support'),
+          ),
+        ),
+        const SizedBox(height: 20),
+      ],
+      if (status == CardStatus.preActive) ...[
+        _StatusNotice(key: const Key('card-preactive-notice'), message: status.blockedMessage),
+        const SizedBox(height: 20),
+      ],
       Card(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -166,22 +189,15 @@ class _CardScreenState extends ConsumerState<CardScreen> {
                 icon: Symbols.visibility_rounded,
                 tint: KColors.primaryContainer,
                 color: KColors.primary,
-                enabled: active,
-                onTap: active ? () => context.push(Routes.cardDisplay) : blocked,
+                enabled: canDisplay,
+                onTap: canDisplay
+                    ? () => context.push(Routes.cardDisplay)
+                    : () => showToast(context, status.blockedMessage),
               ),
-              const Divider(height: 1, color: KColors.divider),
-              if (status == CardStatus.inactive)
-                _ActionTile(
-                  key: const Key('card-action-reactivate'),
-                  label: 'Réactiver ma carte',
-                  sub: 'Elle pourra de nouveau payer',
-                  icon: Symbols.play_circle_rounded,
-                  tint: KColors.successContainer,
-                  color: KColors.success,
-                  enabled: true,
-                  onTap: () => _changeStatus(CardStatusChange.reactivate),
-                )
-              else
+              // Carte pré-active : l'API refuse tout changement d'état (point ouvert n°8) → actions masquées.
+              // Carte perdue/désactivée : plus aucune action possible.
+              if (status == CardStatus.active) ...[
+                const Divider(height: 1, color: KColors.divider),
                 _ActionTile(
                   key: const Key('card-action-suspend'),
                   label: 'Suspendre ma carte',
@@ -189,26 +205,70 @@ class _CardScreenState extends ConsumerState<CardScreen> {
                   icon: Symbols.pause_circle_rounded,
                   tint: KColors.secondaryContainer,
                   color: KColors.primary,
-                  enabled: active,
-                  onTap: active ? () => _changeStatus(CardStatusChange.suspend) : blocked,
+                  enabled: !_busy,
+                  onTap: () => _changeStatus(CardStatusChange.suspend, status),
                 ),
-              const Divider(height: 1, color: KColors.divider),
-              _ActionTile(
-                key: const Key('card-action-lost'),
-                label: 'Déclarer perdue ou volée',
-                sub: 'Blocage définitif',
-                icon: Symbols.report_rounded,
-                tint: KColors.errorContainer,
-                color: KColors.error,
-                enabled: status != CardStatus.lostOrStolen,
-                onTap: status == CardStatus.lostOrStolen ? blocked : () => _changeStatus(CardStatusChange.lost),
-              ),
+              ],
+              if (status == CardStatus.inactive) ...[
+                const Divider(height: 1, color: KColors.divider),
+                _ActionTile(
+                  key: const Key('card-action-reactivate'),
+                  label: 'Réactiver ma carte',
+                  sub: 'Elle pourra de nouveau payer',
+                  icon: Symbols.play_circle_rounded,
+                  tint: KColors.successContainer,
+                  color: KColors.success,
+                  enabled: !_busy,
+                  onTap: () => _changeStatus(CardStatusChange.reactivate, status),
+                ),
+              ],
+              if (status == CardStatus.active || status == CardStatus.inactive) ...[
+                const Divider(height: 1, color: KColors.divider),
+                _ActionTile(
+                  key: const Key('card-action-lost'),
+                  label: 'Déclarer perdue ou volée',
+                  sub: 'Blocage définitif',
+                  icon: Symbols.report_rounded,
+                  tint: KColors.errorContainer,
+                  color: KColors.error,
+                  enabled: !_busy,
+                  onTap: () => _changeStatus(CardStatusChange.lost, status),
+                ),
+              ],
             ],
           ),
         ),
       ),
     ];
   }
+}
+
+class _StatusNotice extends StatelessWidget {
+  const _StatusNotice({required this.message, this.action, super.key});
+  final String message;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Symbols.info_rounded, size: 22, color: KColors.warning),
+              const SizedBox(width: 12),
+              Expanded(child: Text(message, style: const TextStyle(fontSize: 14, height: 1.5))),
+            ],
+          ),
+          if (action != null) Align(alignment: Alignment.centerRight, child: action),
+          if (action == null) const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
 }
 
 class _ActionTile extends StatelessWidget {

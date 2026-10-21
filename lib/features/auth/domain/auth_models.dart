@@ -1,4 +1,5 @@
 import '../../../core/domain/json.dart';
+import '../../../core/domain/session.dart';
 
 enum OtpChannel {
   sms('SMS', 'SMS'),
@@ -8,44 +9,92 @@ enum OtpChannel {
   const OtpChannel(this.api, this.label);
   final String api;
   final String label;
+
+  static OtpChannel? fromApi(String? v) => values.where((c) => c.api == v).firstOrNull;
 }
 
-/// Défi OTP en cours après `POST /v1/auth/login`.
-class LoginChallenge {
-  const LoginChallenge({
-    required this.challengeId,
-    required this.channel,
-    required this.maskedDestination,
-    required this.expiresAt,
-    required this.sendsLeft,
-  });
-
-  factory LoginChallenge.fromJson(Json j) => LoginChallenge(
-    challengeId: j.str('challengeId'),
-    channel: OtpChannel.values.firstWhere((c) => c.api == j.str('channel'), orElse: () => OtpChannel.sms),
-    maskedDestination: j.str('maskedDestination'),
-    expiresAt: j.date('expiresAt'),
-    sendsLeft: j.integer('sendsLeft'),
+/// `GET /auth/customer/channels` : ne proposer que les canaux disponibles, présélectionner le défaut.
+class ChannelAvailability {
+  const ChannelAvailability({required this.available, required this.defaultChannel});
+  factory ChannelAvailability.fromJson(Json j) => ChannelAvailability(
+    available: {
+      for (final c in j.list('channels'))
+        if (OtpChannel.fromApi(c['channel'] as String?) != null)
+          OtpChannel.fromApi(c['channel'] as String?)!: c['available'] == true,
+    },
+    defaultChannel: OtpChannel.fromApi(j.strOrNull('defaultChannel')),
   );
 
-  final String challengeId;
-  final OtpChannel channel;
-  final String maskedDestination;
+  /// Tous les canaux, disponibles ou non (un canal en panne est grisé).
+  static const fallback = ChannelAvailability(
+    available: {OtpChannel.sms: true, OtpChannel.whatsapp: true, OtpChannel.email: true},
+    defaultChannel: OtpChannel.sms,
+  );
+
+  final Map<OtpChannel, bool> available;
+  final OtpChannel? defaultChannel;
+
+  bool isAvailable(OtpChannel c) => available[c] ?? false;
+}
+
+/// Code de connexion envoyé (`POST /auth/customer/login/init`). Garde l'identifiant et les
+/// 4 chiffres saisis : `login/confirm` exige les mêmes valeurs.
+class LoginChallenge {
+  const LoginChallenge({
+    required this.cardCustomerId,
+    required this.last4Digits,
+    required this.channelsUsed,
+    required this.maskedContacts,
+    required this.expiresAt,
+    this.channel,
+  });
+
+  factory LoginChallenge.fromInit(
+    Json j, {
+    required String cardCustomerId,
+    required String last4Digits,
+    OtpChannel? channel,
+    DateTime? now,
+  }) => LoginChallenge(
+    cardCustomerId: cardCustomerId,
+    last4Digits: last4Digits,
+    channel: channel,
+    channelsUsed: j.strings('channelsUsed').map(OtpChannel.fromApi).whereType<OtpChannel>().toList(),
+    maskedContacts: j.strings('maskedContacts'),
+    expiresAt: (now ?? DateTime.now()).add(Duration(minutes: j.intOrNull('expiryMinutes') ?? 5)),
+  );
+
+  final String cardCustomerId;
+  final String last4Digits;
+
+  /// Canal demandé (null = le serveur choisit, éventuellement plusieurs).
+  final OtpChannel? channel;
+  final List<OtpChannel> channelsUsed;
+  final List<String> maskedContacts;
   final DateTime expiresAt;
-  final int sendsLeft;
+
+  /// « +229****456 par SMS ».
+  String get destinationLabel {
+    final via = channelsUsed.map((c) => c == OtpChannel.email ? 'e-mail' : c.label).join(' et ');
+    return [maskedContacts.join(', '), if (via.isNotEmpty) 'par $via'].join(' ');
+  }
 }
 
 enum AuthStatus { unknown, unauthenticated, authenticated }
 
 class AuthState {
-  const AuthState(this.status, {this.hasPin = false});
+  const AuthState(this.status, {this.session});
   const AuthState.unknown() : this(AuthStatus.unknown);
   const AuthState.unauthenticated() : this(AuthStatus.unauthenticated);
+  const AuthState.authenticated(CardSession session) : this(AuthStatus.authenticated, session: session);
 
   final AuthStatus status;
 
-  /// Faux tant que le code secret n'a pas été créé (flux `setup` obligatoire).
-  final bool hasPin;
+  /// Carte de la session (présente si authentifié).
+  final CardSession? session;
+
+  /// Faux tant que le code secret n'a pas été créé (création obligatoire avant tout le reste).
+  bool get hasPin => session?.hasPin ?? false;
 
   bool get isAuthenticated => status == AuthStatus.authenticated;
 }

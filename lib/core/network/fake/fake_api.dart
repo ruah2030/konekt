@@ -14,13 +14,26 @@ import 'handlers/profile_handlers.dart';
 class FakeResponse {
   const FakeResponse(this.status, [this.body]);
   const FakeResponse.ok([Object? body]) : this(200, body);
-  const FakeResponse.noContent() : this(204);
+  const FakeResponse.created([Object? body]) : this(201, body);
 
-  /// Erreur au format du contrat : `{ "error": { code, message, requestId } }`.
+  /// Erreur au format unique de l'API (guide §1.5) :
+  /// `{ statusCode, code, message, details, timestamp, path, requestId }` (path/requestId ajoutés à l'envoi).
   factory FakeResponse.error(int status, String code, String message, {Map<String, dynamic>? details}) =>
-      FakeResponse(status, {
-        'error': {'code': code, 'message': message, 'details': ?details},
+      FakeResponse(status, <String, dynamic>{
+        'statusCode': status,
+        'code': code,
+        'message': message,
+        'details': ?details,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
       });
+
+  /// 400 `VALIDATION_FAILED` avec messages par champ.
+  factory FakeResponse.validation(Map<String, List<String>> fields) => FakeResponse.error(
+    400,
+    'VALIDATION_FAILED',
+    'Certains champs sont invalides. Le détail figure dans « details ».',
+    details: fields,
+  );
 
   final int status;
   final Object? body;
@@ -42,12 +55,13 @@ class FakeRequest {
 typedef FakeHandler = FutureOr<FakeResponse> Function(FakeRequest req);
 
 class _Route {
-  _Route(this.method, String pattern, this.handler, this.auth)
+  _Route(this.method, String pattern, this.handler, this.auth, this.fields)
     : segments = pattern.split('/').where((s) => s.isNotEmpty).toList();
   final String method;
   final List<String> segments;
   final FakeHandler handler;
   final bool auth;
+  final Set<String>? fields;
 
   Map<String, String>? match(String method, String path) {
     if (method != this.method) return null;
@@ -66,9 +80,9 @@ class _Route {
   }
 }
 
-/// Faux backend en mémoire qui implémente le contrat d'API (docs/ARCHITECTURE.md §6.3).
-/// Reproduit les règles de la maquette : il sert au développement tant que
-/// l'API réelle n'est pas disponible, et aux tests.
+/// Faux backend en mémoire qui implémente le contrat de l'API CardConnect v2
+/// (`docs/GUIDE-INTEGRATION-KONEKT.md`). Les chemins sont relatifs à `/api/v1`.
+/// Il sert au développement tant que l'API n'est pas branchée, et aux tests.
 class FakeApi {
   FakeApi({FakeDb? db, this.latency = const Duration(milliseconds: 600)}) : db = db ?? FakeDb() {
     registerAccountHandlers(this);
@@ -83,9 +97,10 @@ class FakeApi {
   final Duration latency;
   final _routes = <_Route>[];
 
-  /// [auth] : exige un Bearer valide (sinon 401 UNAUTHENTICATED).
-  void on(String method, String pattern, FakeHandler handler, {bool auth = true}) =>
-      _routes.add(_Route(method, pattern, handler, auth));
+  /// [auth] : exige un Bearer valide. [fields] : champs de corps autorisés ; comme l'API réelle,
+  /// tout champ inconnu donne 400 `VALIDATION_FAILED` (« property X should not exist »).
+  void on(String method, String pattern, FakeHandler handler, {bool auth = true, Set<String>? fields}) =>
+      _routes.add(_Route(method, pattern, handler, auth, fields));
 
   Future<FakeResponse> handle(RequestOptions o) async {
     if (latency > Duration.zero) await Future<void>.delayed(latency);
@@ -93,8 +108,23 @@ class FakeApi {
       final params = r.match(o.method, o.path);
       if (params == null) continue;
       final req = FakeRequest(o, params);
-      if (r.auth && !db.isValidAccessToken(req.bearer)) {
-        return FakeResponse.error(401, 'UNAUTHENTICATED', 'Votre session a expiré. Reconnectez-vous.');
+      if (r.auth) {
+        final bearer = req.bearer;
+        if (bearer == null) {
+          return FakeResponse.error(401, 'UNAUTHENTICATED', 'Authentification requise.');
+        }
+        if (!db.isValidSessionToken(bearer)) {
+          return FakeResponse.error(401, 'SESSION_EXPIRED', 'Session fermée ou expirée.');
+        }
+      }
+      final allowed = r.fields;
+      if (allowed != null) {
+        final unknown = req.body.keys.where((k) => !allowed.contains(k)).toList();
+        if (unknown.isNotEmpty) {
+          return FakeResponse.validation({
+            for (final k in unknown) k: ['property $k should not exist'],
+          });
+        }
       }
       return r.handler(req);
     }
@@ -111,8 +141,9 @@ class FakeApiInterceptor extends Interceptor {
   Future<void> onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
     final res = await api.handle(options);
     final body = res.body;
-    if (body is Map && body['error'] is Map) {
-      (body['error'] as Map)['requestId'] ??= options.headers['X-Request-Id'];
+    if (body is Map && body['code'] is String && res.status >= 400) {
+      body['path'] ??= '/api/v1${options.path}';
+      body['requestId'] ??= options.headers['X-Request-Id'];
     }
     final response = Response<dynamic>(requestOptions: options, statusCode: res.status, data: body);
     if (res.status >= 400) {
