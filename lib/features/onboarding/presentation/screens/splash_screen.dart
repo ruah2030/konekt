@@ -25,10 +25,6 @@ class SplashScreen extends ConsumerStatefulWidget {
 class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerProviderStateMixin {
   late final AnimationController _progress = AnimationController(vsync: this, duration: SplashScreen.progressDuration)
     ..forward();
-  late final Animation<double> _logo = CurvedAnimation(
-    parent: _progress,
-    curve: const Interval(0, 700 / 2600, curve: Curves.easeOutCubic),
-  );
   Timer? _timer;
   bool _timeUp = false;
   bool _navigated = false;
@@ -76,62 +72,63 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
               colors: [KColors.splashTop, KColors.splashBottom],
             ),
           ),
-          child: SafeArea(
-            child: Column(
-              children: [
-                Expanded(
-                  child: Center(
-                    child: AnimatedBuilder(
-                      animation: _logo,
-                      builder: (context, child) => Opacity(
-                        opacity: _logo.value,
-                        child: Transform.translate(
-                          offset: Offset(0, (1 - _logo.value) * 10),
-                          child: Transform.scale(scale: 0.9 + 0.1 * _logo.value, child: child),
+          // Le logo reprend exactement la place et la taille du splash natif
+          // (flutter_native_splash.yaml) : pas de saut à la transition.
+          child: Stack(
+            children: [
+              Center(
+                child: Image.asset(
+                  'assets/images/logo-full.png',
+                  key: const Key('splash-logo'),
+                  height: 175,
+                  semanticLabel: 'myCard Konekt',
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(
+                  top: false,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 204,
+                        height: 4,
+                        alignment: Alignment.centerLeft,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                        child: AnimatedBuilder(
+                          animation: _progress,
+                          builder: (context, _) => FractionallySizedBox(
+                            key: const Key('splash-progress'),
+                            widthFactor: _progress.value,
+                            heightFactor: 1,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(color: KColors.warning, borderRadius: BorderRadius.circular(2)),
+                            ),
+                          ),
                         ),
                       ),
-                      child: Image.asset(
-                        'assets/images/logo-full.png',
-                        key: const Key('splash-logo'),
-                        width: 156,
-                        semanticLabel: 'myCard Konekt',
+                      const SizedBox(height: 22),
+                      Text(
+                        'POWERED BY BESTCASH',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 2.4,
+                          color: Colors.white.withValues(alpha: 0.55),
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 32),
+                    ],
                   ),
                 ),
-                Container(
-                  width: 204,
-                  height: 4,
-                  alignment: Alignment.centerLeft,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                  child: AnimatedBuilder(
-                    animation: _progress,
-                    builder: (context, _) => FractionallySizedBox(
-                      key: const Key('splash-progress'),
-                      widthFactor: _progress.value,
-                      heightFactor: 1,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(color: KColors.warning, borderRadius: BorderRadius.circular(2)),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Text(
-                  'POWERED BY BESTCASH',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 2.4,
-                    color: Colors.white.withValues(alpha: 0.55),
-                  ),
-                ),
-                const SizedBox(height: 32),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

@@ -31,6 +31,15 @@ conservés entre deux lancements ; le solde et l'historique repartent de zéro �
 Le faux backend suit le contrat de l'API CardConnect v2 ([`docs/GUIDE-INTEGRATION-KONEKT.md`](docs/GUIDE-INTEGRATION-KONEKT.md)).
 Pour brancher la vraie API : `USE_FAKE_API=false`, `API_BASE_URL` (hôte, sans `/api/v1`) et `KONEKT_APP_ID` (fourni par l'équipe backend).
 
+## Icône et écran de démarrage
+
+Sources dans `assets/branding/` (générées à partir des logos de `assets/images/`). Après modification :
+
+```bash
+dart run flutter_launcher_icons
+dart run flutter_native_splash:create
+```
+
 ## Qualité
 
 ```bash

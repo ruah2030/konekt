@@ -123,6 +123,6 @@ Découpage par lots, dans l'ordre conseillé. `[x]` = implémenté et testé con
 - [ ] Accessibilité (Semantics, tailles de police, contrastes, cibles 48 dp)
 - [ ] Sécurité : FLAG_SECURE, obfuscation, certificate pinning, logs désactivés en prod
 - [ ] Analytics / crash reporting (Crashlytics ou Sentry)
-- [ ] Icônes d'app, splash natif (`flutter_native_splash`), nom d'app
+- [x] Icônes d'app, splash natif (`flutter_native_splash`), nom d'app
 - [ ] Tests : unitaires (≥ logique métier), widgets/golden par état, intégration du parcours paiement
 - [ ] Signature Android / iOS, distribution (Firebase App Distribution / TestFlight), fiches stores

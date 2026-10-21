@@ -1,0 +1,10 @@
+# Icône de l'application. Régénérer : dart run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: assets/branding/app_icon.png
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  adaptive_icon_background: "#140A72"
+  adaptive_icon_foreground: assets/branding/app_icon_foreground.png
+  adaptive_icon_monochrome: assets/branding/app_icon_foreground.png
