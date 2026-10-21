@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,13 +10,18 @@ import '../../../../design_system/design_system.dart';
 import '../../../auth/presentation/providers/auth_controller.dart';
 import '../../domain/pin_flow.dart';
 import '../providers/pin_flow_controller.dart';
-import '../providers/pin_status_provider.dart';
 import '../widgets/code_entry_view.dart';
 
 /// Création (premier login), changement ou réinitialisation du code secret.
 class PinFlowScreen extends ConsumerStatefulWidget {
   const PinFlowScreen({required this.flow, super.key});
   final PinFlow flow;
+
+  static const createdMessage = 'Code secret créé. Il confirmera chacun de vos paiements.';
+  static const alreadyDefinedMessage = 'Votre code secret est déjà défini.';
+  static const changedMessage = 'Code secret modifié.';
+  static const resetMessage = 'Code secret réinitialisé.';
+  static const pinHint = '6 chiffres pour confirmer chacun de vos paiements. Évitez 123456 et les chiffres répétés.';
 
   @override
   ConsumerState<PinFlowScreen> createState() => _PinFlowScreenState();
@@ -43,19 +50,17 @@ class _PinFlowScreenState extends ConsumerState<PinFlowScreen> {
 
   PinFlowController get _controller => ref.read(pinFlowControllerProvider(widget.flow).notifier);
 
-  void _onDone() {
+  Future<void> _onDone(PinDoneStep done) async {
     switch (widget.flow) {
       case PinFlow.setup:
-        showToast(context, 'Code secret créé. Il confirmera chacun de vos paiements.');
+        showToast(context, done.alreadyDefined ? PinFlowScreen.alreadyDefinedMessage : PinFlowScreen.createdMessage);
         // Le routeur redirige vers l'accueil.
-        ref.read(authControllerProvider.notifier).pinCreated();
+        await ref.read(authControllerProvider.notifier).pinCreated();
       case PinFlow.change:
-        showToast(context, 'Code secret modifié.');
-        ref.invalidate(pinStatusProvider);
+        showToast(context, PinFlowScreen.changedMessage);
         context.go(Routes.profile);
       case PinFlow.reset:
-        showToast(context, 'Code secret réinitialisé.');
-        ref.invalidate(pinStatusProvider);
+        showToast(context, PinFlowScreen.resetMessage);
         context.go(Routes.profile);
     }
   }
@@ -69,21 +74,25 @@ class _PinFlowScreenState extends ConsumerState<PinFlowScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = pinFlowControllerProvider(widget.flow);
-    ref.listen(provider.select((s) => s.isDone), (prev, done) {
-      if (done && prev != true) _onDone();
+    ref.listen(provider.select((s) => s.step), (prev, step) {
+      if (step is PinDoneStep && prev is! PinDoneStep) unawaited(_onDone(step));
     });
     final s = ref.watch(provider);
     final setup = widget.flow == PinFlow.setup;
+    final sent = s.sent;
+    final codeSubtitle = sent == null
+        ? (s.busy ? 'Envoi du code de vérification…' : "Le code de vérification n'a pas pu être envoyé.")
+        : 'Saisissez le code envoyé au ${sent.destinationLabel}. Valable ${sent.expiryMinutes} minutes.';
     final (title, subtitle, step) = switch (s.step) {
-      PinVerifyStep() => (
+      PinCodeStep() => (
         widget.flow == PinFlow.reset ? 'Code secret oublié' : 'Sécurisons votre compte',
-        'Saisissez le code de vérification envoyé par SMS et par e-mail.',
+        codeSubtitle,
         setup ? 'Étape 1 sur 3' : null,
       ),
-      PinOldStep() => ('Code secret actuel', 'Saisissez votre code secret actuel pour continuer.', null),
+      PinCurrentStep() => ('Code secret actuel', 'Saisissez votre code secret actuel pour continuer.', null),
       PinNewStep() || PinDoneStep() => (
         setup ? 'Choisissez votre code secret' : 'Nouveau code secret',
-        '6 chiffres pour confirmer chacun de vos paiements. Évitez 123456 et les chiffres répétés.',
+        PinFlowScreen.pinHint,
         setup ? 'Étape 2 sur 3' : null,
       ),
       PinConfirmStep() => (
@@ -91,6 +100,11 @@ class _PinFlowScreenState extends ConsumerState<PinFlowScreen> {
         'Saisissez-le une seconde fois.',
         setup ? 'Étape 3 sur 3' : null,
       ),
+    };
+    final link = switch (s.step) {
+      PinCodeStep() => CodeEntryLink(label: 'Renvoyer un code', onTap: () => unawaited(_controller.requestCode())),
+      PinCurrentStep() => CodeEntryLink(label: 'Code secret oublié ?', onTap: () => context.go(Routes.pinReset)),
+      _ => null,
     };
     final showBack = s.step is PinConfirmStep || !setup;
 
@@ -111,6 +125,7 @@ class _PinFlowScreenState extends ConsumerState<PinFlowScreen> {
             obscure: s.obscure,
             error: s.error,
             busy: s.busy,
+            link: link,
             onBack: showBack ? _back : null,
             onChanged: _controller.setCode,
             onCompleted: _controller.submit,

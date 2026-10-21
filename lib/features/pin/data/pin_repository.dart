@@ -4,57 +4,54 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/domain/json.dart';
 import '../../../core/network/dio_client.dart';
 
-/// État du code secret côté serveur (`GET /v1/pin/status`).
-class PinStatus {
-  const PinStatus({required this.hasPin, required this.triesLeft, this.lockedUntil});
+/// Code de vérification envoyé (`pin/setup/request`, `pin/reset/request`).
+class PinCodeSent {
+  const PinCodeSent({required this.channelsUsed, required this.maskedContacts, required this.expiryMinutes});
 
-  factory PinStatus.fromJson(Json j) => PinStatus(
-    hasPin: j.boolean('hasPin'),
-    triesLeft: j.integer('triesLeft'),
-    lockedUntil: j.dateOrNull('lockedUntil'),
+  factory PinCodeSent.fromJson(Json j) => PinCodeSent(
+    channelsUsed: j.strings('channelsUsed'),
+    maskedContacts: j.strings('maskedContacts'),
+    expiryMinutes: j.intOrNull('expiryMinutes') ?? 5,
   );
 
-  final bool hasPin;
-  final int triesLeft;
-  final DateTime? lockedUntil;
+  final List<String> channelsUsed;
+  final List<String> maskedContacts;
+  final int expiryMinutes;
 
-  bool isLocked(DateTime now) => lockedUntil != null && now.isBefore(lockedUntil!);
+  /// « +**********456 et pi***@example.com ».
+  String get destinationLabel {
+    if (maskedContacts.isEmpty) return 'vos contacts';
+    if (maskedContacts.length == 1) return maskedContacts.first;
+    return '${maskedContacts.sublist(0, maskedContacts.length - 1).join(', ')} et ${maskedContacts.last}';
+  }
 }
 
-/// Création, vérification, changement et réinitialisation du code secret.
+/// Code secret du porteur (`/auth/customer/pin*`, guide §2.7).
 /// Les PIN ne sont jamais loggés ni persistés : ils ne font que transiter.
 class PinRepository {
   PinRepository(this._dio);
   final Dio _dio;
 
-  /// Envoie un code de vérification par SMS et par e-mail. Renvoie les destinations masquées.
-  Future<List<String>> requestVerification() async {
-    final j = (await _dio.post<Map<String, dynamic>>('/v1/pin/verification')).data ?? const {};
-    return j.strings('maskedDestinations');
-  }
+  Future<PinCodeSent> _request(String path) async =>
+      PinCodeSent.fromJson((await _dio.post<Map<String, dynamic>>(path)).data ?? const {});
 
-  /// Valide le code de vérification et renvoie un `verificationToken`.
-  Future<String> confirmVerification(String code) async {
-    final j = (await _dio.post<Map<String, dynamic>>('/v1/pin/verification/confirm', data: {'code': code})).data!;
-    return j.str('verificationToken');
-  }
+  /// `POST /auth/customer/pin/setup/request` (sans corps) : envoie le code de vérification de création.
+  Future<PinCodeSent> requestSetupCode() => _request('/auth/customer/pin/setup/request');
 
-  /// Création du premier code secret.
-  Future<void> create({required String verificationToken, required String pin}) =>
-      _dio.post<void>('/v1/pin', data: {'verificationToken': verificationToken, 'pin': pin});
+  /// `POST /auth/customer/pin` (201) : définit le premier code secret.
+  Future<void> create({required String pin, required String code}) =>
+      _dio.post<void>('/auth/customer/pin', data: {'pin': pin, 'code': code});
 
-  /// Vérifie le code secret actuel (flux de changement, étape « Code secret actuel »).
-  Future<void> check(String pin) => _dio.post<void>('/v1/pin/check', data: {'pin': pin});
+  /// `POST /auth/customer/pin/change`.
+  Future<void> change({required String currentPin, required String pin}) =>
+      _dio.post<void>('/auth/customer/pin/change', data: {'currentPin': currentPin, 'pin': pin});
 
-  Future<void> change({required String currentPin, required String newPin}) =>
-      _dio.put<void>('/v1/pin', data: {'currentPin': currentPin, 'newPin': newPin});
+  /// `POST /auth/customer/pin/reset/request` (sans corps) : code oublié.
+  Future<PinCodeSent> requestResetCode() => _request('/auth/customer/pin/reset/request');
 
-  /// Code oublié : remplace le code secret et lève un éventuel verrouillage.
-  Future<void> reset({required String verificationToken, required String pin}) =>
-      _dio.post<void>('/v1/pin/reset', data: {'verificationToken': verificationToken, 'pin': pin});
-
-  Future<PinStatus> status() async =>
-      PinStatus.fromJson((await _dio.get<Map<String, dynamic>>('/v1/pin/status')).data!);
+  /// `POST /auth/customer/pin/reset/confirm` : remplace le code secret et lève le verrouillage.
+  Future<void> confirmReset({required String code, required String pin}) =>
+      _dio.post<void>('/auth/customer/pin/reset/confirm', data: {'code': code, 'pin': pin});
 }
 
 final pinRepositoryProvider = Provider<PinRepository>((ref) => PinRepository(ref.watch(dioProvider)));

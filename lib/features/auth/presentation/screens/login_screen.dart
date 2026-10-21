@@ -10,7 +10,6 @@ import '../../../../app/router/routes.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
 import '../../domain/auth_models.dart';
-import '../providers/auth_controller.dart';
 import '../providers/login_controller.dart';
 
 /// Connexion par carte : identifiant + 4 derniers chiffres, puis code à usage unique.
@@ -36,7 +35,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     FocusScope.of(context).unfocus();
     final c = await ref.read(loginControllerProvider.notifier).submit(cardId: _cardId.text, last4: _last4.text);
     if (c == null || !mounted) return;
-    ref.read(loginChallengeProvider.notifier).set(c);
     unawaited(context.push(Routes.otp));
   }
 
@@ -44,7 +42,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final s = ref.watch(loginControllerProvider);
     final ctrl = ref.read(loginControllerProvider.notifier);
-    final incidents = ref.watch(incidentsProvider).value ?? const [];
+    final platform = ref.watch(platformStatusProvider).value;
+    final channels = s.channels;
+    final unavailable = channels == null
+        ? const <OtpChannel>[]
+        : OtpChannel.values.where((c) => !channels.isAvailable(c)).toList();
     final t = Theme.of(context).textTheme;
     const labelStyle = TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF334155));
 
@@ -67,9 +69,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         alignment: Alignment.centerLeft,
                         child: Image.asset('assets/images/logo-mark.png', width: 64),
                       ),
-                      if (incidents.isNotEmpty) ...[
+                      if (platform != null && platform.hasIncident) ...[
                         const SizedBox(height: 28),
-                        IncidentBanner(incidents.first.message),
+                        IncidentBanner(platform.message),
                       ],
                       const SizedBox(height: 28),
                       Text(
@@ -95,9 +97,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         keyboardType: TextInputType.number,
                         textInputAction: TextInputAction.next,
                         maxLength: 24,
-                        onChanged: (_) => ctrl.clearError(),
+                        onChanged: (_) => ctrl.clearErrors(),
                         style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, letterSpacing: 0.7),
-                        decoration: const InputDecoration(hintText: 'Au dos de la carte', counterText: ''),
+                        decoration: InputDecoration(
+                          hintText: 'Au dos de la carte',
+                          counterText: '',
+                          errorText: s.cardIdError,
+                          errorMaxLines: 3,
+                        ),
                       ),
                       const SizedBox(height: 22),
                       const Text('4 derniers chiffres du numéro', style: labelStyle),
@@ -105,7 +112,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       Align(
                         alignment: Alignment.centerLeft,
                         child: SizedBox(
-                          width: 150,
+                          width: s.last4Error == null ? 150 : double.infinity,
                           child: TextField(
                             key: const Key('login-last4'),
                             controller: _last4,
@@ -115,10 +122,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               FilteringTextInputFormatter.digitsOnly,
                               LengthLimitingTextInputFormatter(4),
                             ],
-                            onChanged: (_) => ctrl.clearError(),
+                            onChanged: (_) => ctrl.clearErrors(),
                             onSubmitted: (_) => _submit(),
                             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: 6.4),
-                            decoration: const InputDecoration(hintText: '••••'),
+                            decoration: InputDecoration(hintText: '••••', errorText: s.last4Error, errorMaxLines: 2),
                           ),
                         ),
                       ),
@@ -135,21 +142,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             ButtonSegment(
                               value: ch,
                               label: Text(ch.label, key: Key('channel-${ch.api}'), overflow: TextOverflow.ellipsis),
-                              enabled: !LoginController.disabledChannels.contains(ch),
+                              enabled: channels?.isAvailable(ch) ?? false,
                             ),
                         ],
-                        selected: {s.channel},
-                        onSelectionChanged: s.busy ? null : (v) => ctrl.selectChannel(v.first),
+                        selected: {?s.channel},
+                        emptySelectionAllowed: true,
+                        onSelectionChanged: s.busy
+                            ? null
+                            : (v) {
+                                if (v.isNotEmpty) ctrl.selectChannel(v.first);
+                              },
                         showSelectedIcon: true,
                         selectedIcon: const Icon(Symbols.check_rounded, size: 18),
                       ),
-                      if (LoginController.disabledChannels.contains(OtpChannel.whatsapp)) ...[
+                      for (final ch in unavailable) ...[
                         const SizedBox(height: 8),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                           child: Text(
-                            'WhatsApp momentanément indisponible',
-                            style: TextStyle(
+                            '${ch.label} momentanément indisponible',
+                            key: Key('channel-unavailable-${ch.api}'),
+                            style: const TextStyle(
                               fontSize: 12,
                               color: KColors.onSurfaceVariant,
                               fontWeight: FontWeight.w500,
@@ -167,7 +180,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       children: [
                         FilledButton(
                           key: const Key('login-submit'),
-                          onPressed: s.busy ? null : _submit,
+                          onPressed: s.busy || channels == null ? null : _submit,
                           child: s.busy
                               ? const SizedBox(
                                   width: 22,

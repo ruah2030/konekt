@@ -45,7 +45,7 @@ void main() {
   test('authRedirect', () {
     const unauth = AuthState.unauthenticated();
     const s = CardSession(cardCustomerId: '121436474', last4: '4589', firstName: 'Awa', lastName: 'H', hasPin: false);
-    final noPin = AuthState.authenticated(s);
+    const noPin = AuthState.authenticated(s);
     final ok = AuthState.authenticated(s.copyWith(hasPin: true));
     expect(authRedirect(const AuthState.unknown(), Routes.home), Routes.splash);
     expect(authRedirect(unauth, Routes.home), Routes.login);

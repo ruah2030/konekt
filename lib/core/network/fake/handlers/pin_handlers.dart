@@ -1,145 +1,211 @@
 import '../fake_api.dart';
 
-/// Code secret : vérification SMS+e-mail, création, contrôle, changement, réinitialisation, statut.
+/// Code secret du porteur (`/auth/customer/pin*`, guide §2.7) et liste d'attente (hors API).
+///
+/// Valeurs utiles : tout code de vérification à 6 chiffres est accepté sauf `000000` (faux).
 void registerPinHandlers(FakeApi api) {
   final db = api.db;
-  const weakMessage = 'Code trop simple : évitez les chiffres identiques et les suites.';
-  const maxVerificationTries = 3;
-  var verificationTries = maxVerificationTries;
+  const maxPinAttempts = 5;
+  const lockDuration = Duration(minutes: 15);
+  const codeValidity = Duration(minutes: 5);
 
-  bool isWeak(String p) => RegExp(r'^(\d)\1{5}$').hasMatch(p) || '0123456789'.contains(p) || '9876543210'.contains(p);
-  bool isPinFormat(String p) => RegExp(r'^\d{6}$').hasMatch(p);
+  /// Demandes de code (setup/reset) de la dernière minute : 5 au maximum.
+  final codeRequests = <DateTime>[];
 
-  FakeResponse? validateNewPin(String pin) {
-    if (!isPinFormat(pin)) return FakeResponse.error(422, 'VALIDATION_FAILED', 'Le code secret compte 6 chiffres.');
-    if (isWeak(pin)) return FakeResponse.error(422, 'PIN_TOO_WEAK', weakMessage);
-    return null;
+  /// Liste d'attente (hors API) : numéro → position.
+  final waitlist = <String, int>{};
+
+  bool isWeak(String pin) =>
+      RegExp(r'^(\d)\1{5}$').hasMatch(pin) || '0123456789'.contains(pin) || '9876543210'.contains(pin);
+
+  FakeResponse weakPin() => FakeResponse.error(
+    400,
+    'PIN_TOO_WEAK',
+    'Code secret trop simple : évitez six chiffres identiques et les suites (123456, 987654…).',
+  );
+
+  /// Champs `pin` / `code` / `currentPin` : 6 chiffres.
+  FakeResponse? validate(Map<String, dynamic> b, List<String> names) {
+    final fields = <String, List<String>>{
+      for (final n in names)
+        if (!RegExp(r'^\d{6}$').hasMatch('${b[n] ?? ''}'))
+          n: [n == 'code' ? 'Le code de vérification comporte six chiffres.' : 'Le code secret comporte six chiffres.'],
+    };
+    return fields.isEmpty ? null : FakeResponse.validation(fields);
   }
 
-  FakeResponse? checkVerificationToken(Object? token) {
-    if (db.pinVerificationToken == null || token != db.pinVerificationToken) {
-      return FakeResponse.error(403, 'FORBIDDEN', 'Vérification expirée. Recommencez.');
-    }
-    return null;
+  FakeResponse? lockRefusal() {
+    final until = db.pinLockedUntil;
+    if (until == null || !db.now().isBefore(until)) return null;
+    final minutes = (until.difference(db.now()).inSeconds / 60).ceil();
+    return FakeResponse.error(
+      403,
+      'FORBIDDEN',
+      'Trop de codes erronés. Réessayez dans $minutes minute(s), ou réinitialisez votre code.',
+    );
   }
 
-  /// Contrôle le PIN actuel : décompte des essais et verrouillage de 15 min.
-  FakeResponse? checkCurrentPin(String pin) {
-    if (db.pin == null) return FakeResponse.error(422, 'REQUEST_REJECTED', "Vous n'avez pas encore de code secret.");
-    final lock = db.pinLockedUntil;
-    if (lock != null && db.now().isBefore(lock)) {
-      final minutes = (lock.difference(db.now()).inSeconds / 60).ceil();
-      return FakeResponse.error(
-        403,
-        'FORBIDDEN',
-        'Réessayez dans $minutes minute(s), ou réinitialisez votre code secret.',
-        details: {'lockedUntil': lock.toIso8601String()},
-      );
+  /// Envoi d'un code de vérification (`setup` | `reset`) sur tous les contacts du dossier.
+  FakeResponse sendCode(String purpose) {
+    final now = db.now();
+    codeRequests.removeWhere((t) => now.difference(t) > const Duration(minutes: 1));
+    if (codeRequests.length >= 5) {
+      return FakeResponse.error(400, 'PIN_CODE_RATE_LIMITED', 'Trop de demandes de code. Patientez une minute.');
     }
-    if (pin != db.pin) {
-      final t = db.pinTries - 1;
-      if (t <= 0) {
-        db
-          ..pinTries = 5
-          ..pinLockedUntil = db.now().add(const Duration(minutes: 15));
-        return FakeResponse.error(
-          403,
-          'FORBIDDEN',
-          'Trop de codes erronés. Réessayez dans 15 minutes, ou réinitialisez votre code secret.',
-          details: {'triesLeft': 0, 'lockedUntil': db.pinLockedUntil!.toIso8601String()},
-        );
-      }
-      db.pinTries = t;
-      return FakeResponse.error(
-        403,
-        'FORBIDDEN',
-        'Code secret incorrect. $t essai(s) avant verrouillage.',
-        details: {'triesLeft': t},
-      );
-    }
-    db.pinTries = 5;
-    return null;
-  }
-
-  api.on('POST', '/v1/pin/verification', (_) {
-    verificationTries = maxVerificationTries;
-    db.pinVerificationToken = null;
+    codeRequests.add(now);
+    db.pinCode = {'purpose': purpose, 'expiresAt': now.add(codeValidity), 'attemptsLeft': 3, 'used': false};
     return FakeResponse.ok({
-      'maskedDestinations': [db.holder['maskedPhone'], db.holder['email']],
+      'success': true,
+      'channelsUsed': ['SMS', 'EMAIL'],
+      'maskedContacts': [db.maskedPhone, db.maskedEmail],
+      'expiryMinutes': codeValidity.inMinutes,
     });
-  });
+  }
 
-  // NB : 422 et non 401, pour ne pas déclencher le rafraîchissement de session de l'AuthInterceptor.
-  api.on('POST', '/v1/pin/verification/confirm', (r) {
-    final code = '${r.body['code'] ?? ''}';
-    if (!isPinFormat(code)) return FakeResponse.error(422, 'VALIDATION_FAILED', 'Le code compte 6 chiffres.');
-    if (verificationTries <= 0) {
-      return FakeResponse.error(422, 'PIN_CODE_INVALID', 'Code inutilisable après 3 essais. Demandez un nouveau code.');
+  /// Vérifie le code reçu sans le consommer. Un code faux (`000000`) décompte un essai.
+  FakeResponse? checkCode(String code, String purpose) {
+    final pc = db.pinCode;
+    if (pc == null || pc['purpose'] != purpose) {
+      return FakeResponse.error(400, 'PIN_CODE_EXPIRED', 'Aucun code en cours de validité. Demandez un nouveau code.');
+    }
+    if (pc['used'] == true) {
+      return FakeResponse.error(400, 'PIN_CODE_ALREADY_USED', 'Ce code a déjà été utilisé. Demandez un nouveau code.');
+    }
+    if (db.now().isAfter(pc['expiresAt'] as DateTime)) {
+      return FakeResponse.error(400, 'PIN_CODE_EXPIRED', 'Ce code a expiré. Demandez un nouveau code.');
+    }
+    final left = pc['attemptsLeft'] as int;
+    if (left <= 0) {
+      return FakeResponse.error(
+        400,
+        'PIN_CODE_EXHAUSTED',
+        "Trop d'essais : ce code n'est plus utilisable. Demandez un nouveau code.",
+      );
     }
     if (code == '000000') {
-      verificationTries -= 1;
+      pc['attemptsLeft'] = left - 1;
+      if (left - 1 <= 0) {
+        return FakeResponse.error(
+          400,
+          'PIN_CODE_EXHAUSTED',
+          "Trop d'essais : ce code n'est plus utilisable. Demandez un nouveau code.",
+        );
+      }
       return FakeResponse.error(
-        422,
+        400,
         'PIN_CODE_INVALID',
-        verificationTries > 0
-            ? 'Code incorrect, $verificationTries essai(s) restant(s).'
-            : 'Code inutilisable après 3 essais. Demandez un nouveau code.',
-        details: {'triesLeft': verificationTries},
+        'Code de vérification incorrect.',
+        details: {'attemptsLeft': left - 1},
       );
     }
-    final token = db.id('pvt_', 16);
-    db.pinVerificationToken = token;
-    return FakeResponse.ok({'verificationToken': token});
-  });
+    return null;
+  }
 
-  api.on('POST', '/v1/pin', (r) {
-    final pin = '${r.body['pin'] ?? ''}';
-    final err = checkVerificationToken(r.body['verificationToken']) ?? validateNewPin(pin);
-    if (err != null) return err;
-    if (db.hasPin) return FakeResponse.error(422, 'REQUEST_REJECTED', 'Un code secret existe déjà.');
+  void definePin(String pin) {
+    db.pinCode?['used'] = true;
     db
       ..pin = pin
-      ..pinTries = 5
-      ..pinLockedUntil = null
-      ..pinVerificationToken = null;
-    return const FakeResponse.noContent();
-  });
+      ..pinAttemptsLeft = maxPinAttempts
+      ..pinLockedUntil = null;
+  }
 
-  api.on('POST', '/v1/pin/check', (r) => checkCurrentPin('${r.body['pin'] ?? ''}') ?? const FakeResponse.noContent());
-
-  api.on('PUT', '/v1/pin', (r) {
-    final current = '${r.body['currentPin'] ?? ''}';
-    final next = '${r.body['newPin'] ?? ''}';
-    final err = checkCurrentPin(current);
-    if (err != null) return err;
-    if (next == current) {
-      return FakeResponse.error(422, 'REQUEST_REJECTED', "Le nouveau code doit être différent de l'ancien.");
+  // ---------------- Création (§2.7.1) ----------------
+  api.on('POST', '/auth/customer/pin/setup/request', (_) {
+    if (db.hasPin) {
+      return FakeResponse.error(400, 'PIN_ALREADY_DEFINED', 'Un code secret est déjà défini pour cette carte.');
     }
-    final invalid = validateNewPin(next);
+    return sendCode('setup');
+  }, fields: const <String>{});
+
+  api.on('POST', '/auth/customer/pin', (r) {
+    final b = r.body;
+    final invalid = validate(b, ['pin', 'code']);
     if (invalid != null) return invalid;
-    db.pin = next;
-    return const FakeResponse.noContent();
-  });
+    if (db.hasPin) {
+      return FakeResponse.error(400, 'PIN_ALREADY_DEFINED', 'Un code secret est déjà défini pour cette carte.');
+    }
+    final pin = '${b['pin']}';
+    // Le code reçu reste valable si le PIN est refusé.
+    if (isWeak(pin)) return weakPin();
+    final refused = checkCode('${b['code']}', 'setup');
+    if (refused != null) return refused;
+    definePin(pin);
+    return const FakeResponse.created({'success': true, 'message': 'Code secret défini.'});
+  }, fields: {'pin', 'code'});
 
-  api.on('POST', '/v1/pin/reset', (r) {
-    final pin = '${r.body['pin'] ?? ''}';
-    final err = checkVerificationToken(r.body['verificationToken']) ?? validateNewPin(pin);
-    if (err != null) return err;
-    db
-      ..pin = pin
-      ..pinTries = 5
-      ..pinLockedUntil = null
-      ..pinVerificationToken = null;
-    return const FakeResponse.noContent();
-  });
+  // ---------------- Changement (§2.7.2) ----------------
+  api.on('POST', '/auth/customer/pin/change', (r) {
+    final b = r.body;
+    final invalid = validate(b, ['currentPin', 'pin']);
+    if (invalid != null) return invalid;
+    if (!db.hasPin) {
+      return FakeResponse.error(400, 'REQUEST_REJECTED', "Aucun code secret n'est encore défini.");
+    }
+    final locked = lockRefusal();
+    if (locked != null) return locked;
+    final pin = '${b['pin']}';
+    if (isWeak(pin)) return weakPin();
+    if (b['currentPin'] != db.pin) {
+      db.pinAttemptsLeft -= 1;
+      if (db.pinAttemptsLeft <= 0) {
+        db
+          ..pinAttemptsLeft = 0
+          ..pinLockedUntil = db.now().add(lockDuration);
+        return lockRefusal()!;
+      }
+      return FakeResponse.error(
+        403,
+        'FORBIDDEN',
+        'Code secret incorrect — ${db.pinAttemptsLeft} tentative(s) restante(s).',
+      );
+    }
+    db.pinAttemptsLeft = maxPinAttempts;
+    if (pin == db.pin) {
+      return FakeResponse.error(400, 'REQUEST_REJECTED', "Le nouveau code doit être différent de l'ancien.");
+    }
+    db.pin = pin;
+    return const FakeResponse.ok({'success': true, 'message': 'Code secret modifié.'});
+  }, fields: {'currentPin', 'pin'});
 
-  api.on('GET', '/v1/pin/status', (_) {
-    final lock = db.pinLockedUntil;
-    final locked = lock != null && db.now().isBefore(lock);
-    return FakeResponse.ok({
-      'hasPin': db.hasPin,
-      'triesLeft': db.pinTries,
-      'lockedUntil': locked ? lock.toIso8601String() : null,
-    });
-  });
+  // ---------------- Oubli (§2.7.3) ----------------
+  api.on('POST', '/auth/customer/pin/reset/request', (_) {
+    if (!db.hasPin) {
+      return FakeResponse.error(400, 'REQUEST_REJECTED', "Aucun code secret n'est encore défini.");
+    }
+    return sendCode('reset');
+  }, fields: const <String>{});
+
+  api.on('POST', '/auth/customer/pin/reset/confirm', (r) {
+    final b = r.body;
+    final invalid = validate(b, ['code', 'pin']);
+    if (invalid != null) return invalid;
+    final pin = '${b['pin']}';
+    if (isWeak(pin)) return weakPin();
+    final refused = checkCode('${b['code']}', 'reset');
+    if (refused != null) return refused;
+    // La réinitialisation lève aussi le verrouillage.
+    definePin(pin);
+    return const FakeResponse.ok({'success': true, 'message': 'Code secret réinitialisé.'});
+  }, fields: {'code', 'pin'});
+
+  // ---------------- Liste d'attente ----------------
+  // Route HORS API CardConnect v2 : servie uniquement par le faux backend.
+  // L'API réelle n'a pas de liste d'attente ; l'écran « Obtenir une invitation » l'appelle
+  // via `WaitlistRepository`, à rebrancher le jour où un service dédié existera.
+  api.on(
+    'POST',
+    '/waitlist',
+    (r) {
+      final msisdn = '${r.body['msisdn'] ?? ''}'.replaceAll(RegExp(r'[\s-]'), '');
+      if (!RegExp(r'^\+?\d{8,15}$').hasMatch(msisdn)) {
+        return FakeResponse.validation({
+          'msisdn': ['Numéro de téléphone invalide.'],
+        });
+      }
+      final position = waitlist.putIfAbsent(msisdn, () => 1287 + waitlist.length);
+      return FakeResponse.created({'success': true, 'position': position});
+    },
+    auth: false,
+    fields: {'msisdn'},
+  );
 }

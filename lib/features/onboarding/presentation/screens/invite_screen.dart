@@ -9,15 +9,14 @@ import 'package:video_player/video_player.dart';
 
 import '../../../../app/router/routes.dart';
 import '../../../../core/storage/app_prefs.dart';
-import '../../../../core/utils/validators.dart';
 import '../../../../design_system/design_system.dart';
 import '../providers/invite_controller.dart';
 
-/// Formate la saisie en `XXXX-XXXX` (majuscules, alphanumérique).
+/// Normalise la saisie : majuscules, lettres, chiffres, `-` et `_`, 40 caractères au plus.
 class InviteCodeFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-    final text = Validators.formatInviteCode(newValue.text);
+    final text = InviteController.normalize(newValue.text);
     return TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
@@ -25,7 +24,7 @@ class InviteCodeFormatter extends TextInputFormatter {
   }
 }
 
-/// Premier lancement : saisie du code d'invitation.
+/// Premier lancement : saisie du code d'invitation du marchand (transmis à la connexion).
 class InviteScreen extends ConsumerStatefulWidget {
   const InviteScreen({super.key});
 
@@ -56,22 +55,23 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
     FocusScope.of(context).unfocus();
     final ok = await ref.read(inviteControllerProvider.notifier).submit(_code.text);
     if (!ok || !mounted) return;
-    _leaveTimer = Timer(InviteScreen.acceptedDelay, () async {
-      await ref.read(appPrefsProvider).setFirstLaunchDone();
+    _leaveTimer = Timer(InviteScreen.acceptedDelay, () {
       if (mounted) context.go(Routes.login);
     });
   }
 
   /// « skipInvite » de la maquette : la personne a déjà une carte.
   Future<void> _skip() async {
-    await ref.read(appPrefsProvider).setFirstLaunchDone();
+    final prefs = ref.read(appPrefsProvider);
+    await prefs.setReferralCode(null);
+    await prefs.setFirstLaunchDone();
     if (mounted) context.go(Routes.login);
   }
 
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(inviteControllerProvider);
-    final complete = _code.text.length == 9;
+    final complete = _code.text.length >= InviteController.minLength;
     final t = Theme.of(context).textTheme;
     final borderColor = s.error != null
         ? KColors.error
@@ -149,11 +149,11 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
                                   style: const TextStyle(
                                     fontSize: 23,
                                     fontWeight: FontWeight.w800,
-                                    letterSpacing: 5,
+                                    letterSpacing: 3,
                                     color: KColors.primary,
                                   ),
                                   decoration: InputDecoration(
-                                    hintText: 'XXXX-XXXX',
+                                    hintText: 'CODE MARCHAND',
                                     contentPadding: const EdgeInsets.symmetric(vertical: 17, horizontal: 16),
                                     border: border,
                                     enabledBorder: border,
@@ -201,20 +201,20 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
                                           color: KColors.successContainer,
                                           borderRadius: BorderRadius.circular(8),
                                         ),
-                                        child: Row(
+                                        child: const Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            const Icon(
+                                            Icon(
                                               Symbols.check_circle_rounded,
                                               size: 18,
                                               fill: 1,
                                               color: KColors.successDark,
                                             ),
-                                            const SizedBox(width: 8),
+                                            SizedBox(width: 8),
                                             Flexible(
                                               child: Text(
-                                                'Invitation de ${s.inviterName} acceptée',
-                                                style: const TextStyle(
+                                                "Code d'invitation enregistré",
+                                                style: TextStyle(
                                                   fontSize: 13,
                                                   fontWeight: FontWeight.w700,
                                                   color: KColors.successDark,
@@ -233,7 +233,7 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
                                   style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
                                   onPressed: complete && s.status == InviteStatus.idle ? _submit : null,
                                   child: Text(switch (s.status) {
-                                    InviteStatus.checking => 'Vérification…',
+                                    InviteStatus.saving => 'Enregistrement…',
                                     InviteStatus.accepted => 'Bienvenue',
                                     InviteStatus.idle => 'Continuer',
                                   }),

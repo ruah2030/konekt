@@ -2,7 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/network/api_failure.dart';
 import '../../../../core/utils/validators.dart';
-import '../../../auth/data/auth_repository.dart';
+import '../../data/waitlist_repository.dart';
 
 class WaitlistState {
   const WaitlistState({this.busy = false, this.position, this.error});
@@ -29,7 +29,7 @@ class WaitlistController extends Notifier<WaitlistState> {
     if (!Validators.isMsisdn(msisdn)) return false;
     state = const WaitlistState(busy: true);
     try {
-      final position = await ref.read(authRepositoryProvider).joinWaitlist(msisdn.trim());
+      final position = await ref.read(waitlistRepositoryProvider).join(msisdn.replaceAll(RegExp(r'[\s-]'), ''));
       if (ref.mounted) state = WaitlistState(position: position);
     } catch (e) {
       if (ref.mounted) state = WaitlistState(error: ApiFailure.from(e));

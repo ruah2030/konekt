@@ -10,16 +10,24 @@ import 'package:konekt/features/auth/presentation/screens/otp_screen.dart';
 import '../../helpers/test_app.dart';
 import 'router_harness.dart';
 
+/// L'écran du code a un compte à rebours (timer périodique) : pas de `pumpAndSettle`.
+Future<void> settle(WidgetTester tester) async {
+  for (var i = 0; i < 8; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
 void main() {
-  Future<(TestEnv, ProviderContainer)> toOtp(WidgetTester tester) async {
+  Future<(TestEnv, ProviderContainer)> toOtp(WidgetTester tester, {Map<String, Object> prefs = const {}}) async {
     usePhoneSize(tester);
-    final env = await TestEnv.create();
+    final env = await TestEnv.create(prefs: prefs);
     final container = await pumpWithRouter(
       tester,
       env,
       initial: Routes.login,
       screens: {Routes.login: LoginScreen.new, Routes.otp: OtpScreen.new},
     );
+    container.read(authControllerProvider);
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('login-card-id')), '121436474');
     await tester.enterText(find.byKey(const Key('login-last4')), '4589');
@@ -36,58 +44,60 @@ void main() {
     await settle(tester);
   }
 
-  testWidgets('affiche la destination masquée et le compte à rebours', (tester) async {
+  testWidgets('destination masquée et compte à rebours', (tester) async {
     await toOtp(tester);
     expect(find.text('Saisissez le code reçu'), findsOneWidget);
-    expect(
-      find.textContaining(RegExp(r'^Envoyé au \+229 •• •• •• 456 par SMS\. Expire dans [45]:\d\d\.$')),
-      findsOneWidget,
-    );
-    expect(find.text('Renvoyer un code'), findsOneWidget);
+    final subtitle = tester.widget<Text>(find.byKey(const Key('code-subtitle'))).data!;
+    expect(subtitle, matches(RegExp(r'^Envoyé au \+229\*{4}456 par SMS\. Expire dans [45]:[0-5]\d$')));
   });
 
-  testWidgets('code correct → session ouverte', (tester) async {
-    final (env, container) = await toOtp(tester);
-    await typeCode(tester, '123456');
+  testWidgets('succès → session ouverte avec la carte, code d’invitation transmis', (tester) async {
+    final (env, container) = await toOtp(tester, prefs: {'merchant_referral_code': 'REF-XYZ123'});
+    await typeCode(tester, '482910');
     final auth = container.read(authControllerProvider);
     expect(auth.status, AuthStatus.authenticated);
+    expect(auth.session?.cardCustomerId, '121436474');
+    expect(auth.session?.last4, '4589');
     expect(auth.hasPin, isFalse);
     expect(container.read(loginChallengeProvider), isNull);
-    expect(env.store.accessToken, completion(isNotNull));
+    expect(await env.store.sessionToken, isNotNull);
+    expect(env.prefs.referralCode, 'REF-XYZ123');
   });
 
-  testWidgets('000000 → erreur, saisie vidée', (tester) async {
+  testWidgets('401 → message du serveur et saisie vidée', (tester) async {
     final (_, container) = await toOtp(tester);
     await typeCode(tester, '000000');
     expect(find.text('Code incorrect. 2 essai(s) restant(s).'), findsOneWidget);
-    expect(find.textContaining('UNAUTHENTICATED'), findsOneWidget);
-    expect(find.text('0'), findsOneWidget); // seulement la touche du pavé, les cases sont vides
     expect(container.read(authControllerProvider).isAuthenticated, isFalse);
+    final dot = tester.widget<Text>(
+      find.descendant(of: find.byKey(const Key('pin-dot-0')), matching: find.byType(Text)),
+    );
+    expect(dot.data, isNot('0'));
   });
 
-  testWidgets('renvoi du code puis limite atteinte', (tester) async {
-    await toOtp(tester);
-    await tester.tap(find.byKey(const Key('code-link')));
+  testWidgets('403 carte perdue → message + « Contacter le support »', (tester) async {
+    final (env, _) = await toOtp(tester);
+    env.db.cardStatus = 'LostOrStolen';
+    await typeCode(tester, '482910');
+    expect(find.textContaining('déclarée perdue ou volée'), findsOneWidget);
+    expect(find.text('Contacter le support'), findsOneWidget);
+    await tester.tap(find.text('Contacter le support'));
+    await tester.pump();
+    expect(find.text(OtpScreen.supportMessage), findsOneWidget);
+  });
+
+  testWidgets('renvoyer un code : nouveau login/init, puis limite horaire du serveur', (tester) async {
+    final (env, _) = await toOtp(tester);
+    expect(env.db.loginCodesThisHour, 1);
+    await tester.tap(find.text('Renvoyer un code'));
     await settle(tester);
     expect(find.text('Nouveau code envoyé.'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('code-link')));
-    await settle(tester);
-    expect(find.text('Limite de 3 codes par heure atteinte'), findsOneWidget);
-    final link = tester.widget<TextButton>(find.byKey(const Key('code-link')));
-    expect(link.onPressed, isNull);
-  });
+    expect(env.db.loginCodesThisHour, 2);
 
-  testWidgets('retour → écran de connexion', (tester) async {
-    await toOtp(tester);
-    await tester.tap(find.byKey(const Key('code-back')));
+    env.db.loginCodesThisHour = 3;
+    await tester.pump(const Duration(seconds: 5));
+    await tester.tap(find.text('Renvoyer un code'));
     await settle(tester);
-    expect(find.text('Connectez votre carte'), findsOneWidget);
+    expect(find.text('Trop de demandes de code. Réessayez dans une heure.'), findsOneWidget);
   });
-}
-
-/// L'horloge (nowProvider) tourne en continu : pas de pumpAndSettle.
-Future<void> settle(WidgetTester tester) async {
-  for (var i = 0; i < 6; i++) {
-    await tester.pump(const Duration(milliseconds: 150));
-  }
 }

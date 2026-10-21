@@ -1,118 +1,184 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:konekt/core/network/api_failure.dart';
+import 'package:konekt/core/network/dio_client.dart';
 import 'package:konekt/core/network/fake/fake_db.dart';
+import 'package:konekt/features/pin/data/pin_repository.dart';
 import 'package:konekt/features/pin/domain/pin_flow.dart';
+import 'package:konekt/features/pin/domain/pin_rules.dart';
 import 'package:konekt/features/pin/presentation/providers/pin_flow_controller.dart';
 
 import '../../helpers/test_app.dart';
 
-void main() {
-  late TestEnv env;
-  late ProviderContainer container;
+/// Refuse une seule fois le PIN (`PIN_TOO_WEAK`, comme si le serveur avait une règle de plus)
+/// et mémorise les codes reçus.
+class _StrictServerRepo extends PinRepository {
+  _StrictServerRepo(super.dio);
+  final codes = <String>[];
+  bool refused = false;
 
-  Future<PinFlowController> start(PinFlow flow, {bool hasPin = false}) async {
-    env = await TestEnv.create(signedIn: true, db: FakeDb(hasPin: hasPin));
-    container = env.container();
+  @override
+  Future<void> create({required String pin, required String code}) {
+    codes.add(code);
+    if (!refused) {
+      refused = true;
+      throw const ApiFailure(code: ErrorCodes.pinTooWeak, message: 'Code secret trop simple.', statusCode: 400);
+    }
+    return super.create(pin: pin, code: code);
+  }
+}
+
+Future<void> flush() async {
+  for (var i = 0; i < 20; i++) {
+    await Future<void>.delayed(Duration.zero);
+  }
+}
+
+void main() {
+  Future<(TestEnv, ProviderContainer, PinFlowController)> start(
+    PinFlow flow, {
+    bool hasPin = false,
+    PinRepository Function(Dio dio)? repo,
+  }) async {
+    final env = await TestEnv.create(signedIn: true, db: FakeDb(hasPin: hasPin));
+    final container = ProviderContainer(
+      overrides: [
+        ...env.overrides,
+        if (repo != null) pinRepositoryProvider.overrideWith((ref) => repo(ref.watch(dioProvider))),
+      ],
+    );
     addTearDown(container.dispose);
     container.listen(pinFlowControllerProvider(flow), (_, _) {});
-    await Future<void>.delayed(Duration.zero);
-    return container.read(pinFlowControllerProvider(flow).notifier);
+    await flush();
+    return (env, container, container.read(pinFlowControllerProvider(flow).notifier));
   }
 
-  PinFlowState stateOf(PinFlow flow) => container.read(pinFlowControllerProvider(flow));
+  PinFlowState stateOf(ProviderContainer c, PinFlow flow) => c.read(pinFlowControllerProvider(flow));
 
-  test('setup : vérification → nouveau → confirmation → PIN créé', () async {
-    final c = await start(PinFlow.setup);
-    expect(stateOf(PinFlow.setup).step, isA<PinVerifyStep>());
-    expect(stateOf(PinFlow.setup).obscure, isFalse);
+  test('règles locales du PIN (§7.4)', () {
+    expect(PinRules.problem('111111'), PinRules.repeatedMessage);
+    expect(PinRules.problem('345678'), PinRules.sequenceMessage);
+    expect(PinRules.problem('987654'), PinRules.sequenceMessage);
+    expect(PinRules.problem('12345'), PinRules.formatMessage);
+    expect(PinRules.problem('482915'), isNull);
+  });
 
-    await c.submit('123456');
-    expect(stateOf(PinFlow.setup).step, isA<PinNewStep>());
-    expect(stateOf(PinFlow.setup).obscure, isTrue);
+  test('création : code demandé au début, saisi localement, puis POST pin', () async {
+    final (env, c, ctrl) = await start(PinFlow.setup);
+    var s = stateOf(c, PinFlow.setup);
+    expect(s.step, isA<PinCodeStep>());
+    expect(s.sent?.maskedContacts, [env.db.maskedPhone, env.db.maskedEmail]);
+    expect(s.sent?.expiryMinutes, 5);
+    expect(s.obscure, isFalse);
 
-    await c.submit('482915');
-    expect(stateOf(PinFlow.setup).step, isA<PinConfirmStep>());
+    await ctrl.submit('604218');
+    expect(stateOf(c, PinFlow.setup).step, isA<PinNewStep>());
+    expect(env.db.pinCode?['attemptsLeft'], 3, reason: "le code n'est pas envoyé seul");
 
-    await c.submit('482915');
-    expect(stateOf(PinFlow.setup).isDone, isTrue);
+    await ctrl.submit('111111');
+    s = stateOf(c, PinFlow.setup);
+    expect(s.step, isA<PinNewStep>());
+    expect(s.error?.message, PinRules.repeatedMessage);
+
+    await ctrl.submit('482915');
+    await ctrl.submit('482910');
+    s = stateOf(c, PinFlow.setup);
+    expect(s.step, isA<PinNewStep>());
+    expect(s.error?.message, PinFlowController.mismatchMessage);
+
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    expect(stateOf(c, PinFlow.setup).step, isA<PinDoneStep>());
     expect(env.db.pin, '482915');
   });
 
-  test('setup : code de vérification erroné → erreur et saisie vidée', () async {
-    final c = await start(PinFlow.setup);
-    c.setCode('000000');
-    await c.submit('000000');
-    final s = stateOf(PinFlow.setup);
-    expect(s.step, isA<PinVerifyStep>());
-    expect(s.code, isEmpty);
-    expect(s.error?.code, ErrorCodes.pinCodeInvalid);
-    expect(s.error?.message, 'Code incorrect, 2 essai(s) restant(s).');
-  });
-
-  test('PIN faible refusé (PIN_TOO_WEAK)', () async {
-    final c = await start(PinFlow.setup);
-    await c.submit('123456');
-    for (final weak in ['111111', '123456', '987654']) {
-      await c.submit(weak);
-      final s = stateOf(PinFlow.setup);
-      expect(s.step, isA<PinNewStep>());
-      expect(s.error?.code, ErrorCodes.pinTooWeak);
-    }
-  });
-
-  test('confirmation différente → retour au nouveau code avec erreur', () async {
-    final c = await start(PinFlow.setup);
-    await c.submit('123456');
-    await c.submit('482915');
-    await c.submit('482916');
-    final s = stateOf(PinFlow.setup);
+  test('création : PIN_TOO_WEAK du serveur → retour au nouveau PIN, code reçu conservé', () async {
+    late _StrictServerRepo spy;
+    final (env, c, ctrl) = await start(PinFlow.setup, repo: (dio) => spy = _StrictServerRepo(dio));
+    await ctrl.submit('604218');
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    final s = stateOf(c, PinFlow.setup);
     expect(s.step, isA<PinNewStep>());
-    expect(s.error?.code, ErrorCodes.validationFailed);
-    expect(s.error?.message, 'Les deux codes ne correspondent pas. Recommencez.');
+    expect(s.error?.code, ErrorCodes.pinTooWeak);
+
+    await ctrl.submit('730519');
+    await ctrl.submit('730519');
+    expect(stateOf(c, PinFlow.setup).step, isA<PinDoneStep>());
+    expect(spy.codes, ['604218', '604218']);
+    expect(env.db.pin, '730519');
+  });
+
+  test('création : code faux → retour à l’étape code avec les essais restants', () async {
+    final (env, c, ctrl) = await start(PinFlow.setup);
+    await ctrl.submit('000000');
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    final s = stateOf(c, PinFlow.setup);
+    expect(s.step, isA<PinCodeStep>());
+    expect(s.error?.message, 'Code incorrect, 2 essai(s) restant(s).');
     expect(env.db.pin, isNull);
+
+    await ctrl.submit('604218');
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    expect(stateOf(c, PinFlow.setup).step, isA<PinDoneStep>());
   });
 
-  test('retour : confirmation → nouveau code ; sinon quitte l’écran', () async {
-    final c = await start(PinFlow.setup);
-    expect(c.back(), isFalse);
-    await c.submit('123456');
-    await c.submit('482915');
-    expect(c.back(), isTrue);
-    expect(stateOf(PinFlow.setup).step, isA<PinNewStep>());
+  test('création : code expiré → nouveau code demandé automatiquement', () async {
+    final (env, c, ctrl) = await start(PinFlow.setup);
+    env.db.pinCode!['expiresAt'] = DateTime.now().subtract(const Duration(seconds: 1));
+    await ctrl.submit('604218');
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    await flush();
+    final s = stateOf(c, PinFlow.setup);
+    expect(s.step, isA<PinCodeStep>());
+    expect(s.error?.code, ErrorCodes.pinCodeExpired);
+    expect(s.error?.message, endsWith(PinFlowController.newCodeSentSuffix));
+    expect(env.db.now().isBefore(env.db.pinCode!['expiresAt'] as DateTime), isTrue);
   });
 
-  test('change : ancien PIN vérifié côté serveur, nouveau ≠ ancien, confirmation', () async {
-    final c = await start(PinFlow.change, hasPin: true);
-    expect(stateOf(PinFlow.change).step, isA<PinOldStep>());
+  test('création : PIN déjà défini → terminé', () async {
+    final (_, c, _) = await start(PinFlow.setup, hasPin: true);
+    final step = stateOf(c, PinFlow.setup).step;
+    expect(step, isA<PinDoneStep>());
+    expect((step as PinDoneStep).alreadyDefined, isTrue);
+  });
 
-    await c.submit('111222');
-    expect(stateOf(PinFlow.change).step, isA<PinOldStep>());
-    expect(stateOf(PinFlow.change).error?.message, 'Code secret incorrect. 4 essai(s) avant verrouillage.');
+  test('changement : 403 → retour au PIN actuel ; 400 → retour au nouveau PIN', () async {
+    final (env, c, ctrl) = await start(PinFlow.change, hasPin: true);
+    expect(stateOf(c, PinFlow.change).step, isA<PinCurrentStep>());
 
-    await c.submit('482915');
-    expect(stateOf(PinFlow.change).step, isA<PinNewStep>());
+    await ctrl.submit('111222');
+    await ctrl.submit('135790');
+    await ctrl.submit('135790');
+    var s = stateOf(c, PinFlow.change);
+    expect(s.step, isA<PinCurrentStep>());
+    expect(s.error?.message, 'Code secret incorrect — 4 tentative(s) restante(s).');
 
-    await c.submit('482915');
-    expect(stateOf(PinFlow.change).error?.message, "Le nouveau code doit être différent de l'ancien.");
+    await ctrl.submit('482915');
+    await ctrl.submit('482915');
+    s = stateOf(c, PinFlow.change);
+    expect(s.step, isA<PinNewStep>());
+    expect(s.error?.message, PinFlowController.sameAsOldMessage);
 
-    await c.submit('135790');
-    await c.submit('135790');
-    expect(stateOf(PinFlow.change).isDone, isTrue);
+    await ctrl.submit('135790');
+    await ctrl.submit('135790');
+    expect(stateOf(c, PinFlow.change).step, isA<PinDoneStep>());
     expect(env.db.pin, '135790');
   });
 
-  test('reset : vérification → nouveau → confirmation, lève le verrouillage', () async {
-    final c = await start(PinFlow.reset, hasPin: true);
-    env.db
-      ..pinTries = 1
-      ..pinLockedUntil = DateTime.now().add(const Duration(minutes: 10));
-    await c.submit('654321');
-    await c.submit('246813');
-    await c.submit('246813');
-    expect(stateOf(PinFlow.reset).isDone, isTrue);
-    expect(env.db.pin, '246813');
-    expect(env.db.pinTries, 5);
+  test('oubli : reset/request → code → nouveau PIN → reset/confirm', () async {
+    final (env, c, ctrl) = await start(PinFlow.reset, hasPin: true);
+    env.db.pinLockedUntil = DateTime.now().add(const Duration(minutes: 10));
+    expect(env.db.pinCode?['purpose'], 'reset');
+    await ctrl.submit('604218');
+    await ctrl.submit('135790');
+    await ctrl.submit('135790');
+    expect(stateOf(c, PinFlow.reset).step, isA<PinDoneStep>());
+    expect(env.db.pin, '135790');
     expect(env.db.pinLockedUntil, isNull);
   });
 }
