@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:material_symbols_icons/symbols.dart';
-import 'package:screen_protector/screen_protector.dart';
 
 import '../../../../app/router/routes.dart';
 import '../../../../core/network/api_failure.dart';
+import '../../../../core/security/screen_security.dart';
 import '../../../../core/providers/ticker.dart';
 import '../../../../core/utils/countdown.dart';
 import '../../../../design_system/design_system.dart';
@@ -39,15 +39,7 @@ class _SecureDisplayScreenState extends ConsumerState<SecureDisplayScreen> {
   }
 
   Future<void> _protect({required bool on}) async {
-    try {
-      if (on) {
-        await ScreenProtector.preventScreenshotOn();
-      } else {
-        await ScreenProtector.preventScreenshotOff();
-      }
-    } catch (_) {
-      // Plugin indisponible (tests, web) : on continue sans protection native.
-    }
+    await ScreenSecurity.set(on: on);
   }
 
   @override

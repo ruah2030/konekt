@@ -21,7 +21,7 @@ Document de référence pour développer l'application mobile **myCard Konekt 2.
 | Polices / icônes | `google_fonts` (Plus Jakarta Sans), `material_symbols_icons` (Rounded) | Conforme à la maquette |
 | Vidéo | `video_player` | Vidéo d'onboarding sur l'écran Invitation (`onboarding-card.mp4`) |
 | Notifications push | `firebase_messaging` + `flutter_local_notifications` | Résultat des opérations, nouvelle connexion, alertes carte |
-| Sécurité écran | `screen_protector` (ou `FLAG_SECURE` natif) | Interdire capture d'écran sur l'affichage PAN/CVV et la saisie PIN |
+| Sécurité écran | `FLAG_SECURE` natif via un canal de méthode (`core/security/screen_security.dart` + `MainActivity`) | Interdire capture d'écran sur l'affichage PAN/CVV et la saisie PIN |
 | Infos appareil | `device_info_plus`, `package_info_plus` | En-têtes appareil, écran « Appareils connectés » |
 | i18n / formats | `flutter_localizations` + `intl` (fr-FR) | Montants `152 400 FCFA`, dates « Hier à 14:05 » |
 | Liens externes | `url_launcher` | Actions de type `url` des promotions, support |

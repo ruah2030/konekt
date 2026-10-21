@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:screen_protector/screen_protector.dart';
 
 import '../../../../app/router/routes.dart';
+import '../../../../core/security/screen_security.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../auth/presentation/providers/auth_controller.dart';
 import '../../domain/pin_flow.dart';
@@ -41,11 +41,7 @@ class _PinFlowScreenState extends ConsumerState<PinFlowScreen> {
   }
 
   static Future<void> _protect(bool on) async {
-    try {
-      on ? await ScreenProtector.preventScreenshotOn() : await ScreenProtector.preventScreenshotOff();
-    } catch (_) {
-      // Plugin indisponible (tests, web) : sans conséquence.
-    }
+    await ScreenSecurity.set(on: on);
   }
 
   PinFlowController get _controller => ref.read(pinFlowControllerProvider(widget.flow).notifier);
