@@ -2,7 +2,8 @@
 
 Document de référence pour développer l'application mobile **myCard Konekt 2.0** (powered by BestCash) à partir de la maquette `Card Konekt Material` (Flutter · Material 3).
 
-> Les endpoints d'API ci-dessous sont **déduits de la maquette** (codes d'erreur, statuts, délais, champs). Ils doivent être validés avec l'équipe backend avant implémentation — voir la section 6.
+> L'app consomme l'**API CardConnect v2** décrite dans [`GUIDE-INTEGRATION-KONEKT.md`](GUIDE-INTEGRATION-KONEKT.md), qui fait foi.
+> Tant que l'API n'est pas branchée, un faux backend en mémoire reproduit ce contrat (section 6).
 
 ---
 
@@ -118,14 +119,15 @@ Règles : `presentation` ne connaît que `domain` ; `data` implémente `domain` 
 
 | Provider | Type | Rôle |
 |---|---|---|
-| `authControllerProvider` | `AsyncNotifier<AuthState>` | `unknown / firstLaunch / unauthenticated / otpPending / needsPinSetup / authenticated`. Le router écoute ce provider pour ses redirections |
-| `sessionProvider` | `Notifier<Session?>` | carte de session (id, last4), titulaire (prénom, initiales) |
-| `cardProvider` | `AsyncNotifier<Card>` | statut (`Active / Inactive / PreActive / LostOrStolen`), gamme, émetteur. Conditionne l'accès aux services |
-| `balanceProvider` | `AsyncNotifier<Balance>` | solde, rafraîchi après chaque opération réussie et en pull-to-refresh |
+| `authControllerProvider` | `Notifier<AuthState>` | `unknown / unauthenticated / authenticated` + `CardSession` (carte, titulaire, `hasPin`). Le routeur l'écoute pour ses redirections (création du PIN obligatoire si `hasPin == false`) |
+| `cardSessionProvider` | `Provider<CardSession?>` | carte de session : `cardCustomerId` à renvoyer tel quel dans toutes les routes carte |
+| `cardProvider` | `AsyncNotifier<CardInfo>` | `GET /cards` (ou `details` pour une carte externe) : statut `Active / Inactive / PreActive / LostOrStolen / Deactivated`, gamme, émetteur |
+| `balanceProvider` | `FutureProvider<num>` | solde lu en direct chez l'émetteur ; erreur 400 si la carte est suspendue ou bloquée |
 | `hideBalanceProvider` | `Notifier<bool>` | persisté en prefs |
-| `unreadCountProvider` | dérivé de `notificationsProvider` | badge cloche |
-| `systemStatusProvider` | `FutureProvider` | bannière « Incident chez un opérateur » (login + accueil) |
-| `promotionsProvider.family(placement)` | `FutureProvider` | pubs filtrées/triées par `priority`, moins celles fermées |
+| `unreadCountProvider` | `FutureProvider<int>` | `GET /notifications/unread-count`, rafraîchi chaque minute (push non branché côté API) |
+| `platformStatusProvider` | `FutureProvider` | `GET /status` : bannière d'incident si `overall != operational` |
+| `serviceOffersProvider` | `FutureProvider` | `GET /catalog/services` : services ouverts ou grisés avec motif |
+| `promotionsProvider.family(placement)` | `FutureProvider` | publicités (⚠️ hors API, voir 6.4) |
 
 ### 3.2 États de flux (scopés à l'écran, `autoDispose`)
 
@@ -217,90 +219,48 @@ Retour arrière depuis `/code` selon le contexte : `login → /login`, `pay → 
 
 ## 6. Consommation de l'API
 
-### 6.1 Client
+Référence complète : [`GUIDE-INTEGRATION-KONEKT.md`](GUIDE-INTEGRATION-KONEKT.md).
 
-- `Dio(BaseOptions(baseUrl: Env.apiBaseUrl, connectTimeout: 10s, receiveTimeout: 30s))`.
-- En-têtes systématiques : `Authorization: Bearer …`, `X-Request-Id` (UUID, affiché en « Réf. » dans les erreurs), `X-Device-Id` (UUID persisté), `X-App-Version`, `Accept-Language: fr-BJ`.
-- `Idempotency-Key` (= `quoteId` ou UUID) sur l'exécution d'un paiement : **ne jamais rejouer automatiquement** un POST d'exécution, même en cas de timeout ; on passe en statut `PROCESSING` et on interroge l'opération.
-- Refresh token : file d'attente des requêtes pendant le refresh (`QueuedInterceptor`).
-- Pas de retry automatique sur POST ; retry exponentiel limité sur GET réseau.
-- Certificate pinning recommandé en prod (application financière).
+### 6.1 Client (`core/network`)
 
-### 6.2 Format d'erreur attendu
+- Base : `<API_BASE_URL>/api/v1` ; les repositories utilisent des chemins relatifs (`/cards/balance/$id`).
+- En-têtes : `Authorization: Bearer <sessionToken>` (sauf routes publiques), `X-Request-Id`, `Accept-Language: fr`, `User-Agent: CardKonekt/<version> (<OS>)`.
+- **401** (guide §1.6) : `SESSION_EXPIRED` → un seul `POST /auth/customer/refresh` à la fois (`QueuedInterceptor`), les deux jetons remplacés, puis un rejeu ; échec → déconnexion. `UNAUTHENTICATED` « Jeton non reconnu pour cette route » → bug d'intégration, **pas** de déconnexion.
+- **Idempotence** : pas d'en-tête dédié ; `reference` / `requestId` dans le corps, UUID v4 neuf par tentative de paiement, réutilisé seulement pour rejouer la même tentative. Aucun paiement n'est relancé automatiquement.
+- Délai de réception 75 s : les confirmations de paiement appellent l'émetteur pendant la requête.
 
-```json
-{ "error": { "code": "INSUFFICIENT_FUNDS", "message": "…", "requestId": "req_01J…", "details": {} } }
-```
+### 6.2 Erreurs
 
-`ApiFailure` mappe ces codes (vus dans la maquette) :
+Format unique : `{ statusCode, code, message, details, timestamp, path, requestId }`. `ApiFailure` expose `code` (logique), `message` (affiché tel quel), `ref` (« Réf. » pour le support) et `fieldErrors(champ)` pour `VALIDATION_FAILED`.
 
-| Code | Usage |
+### 6.3 Correspondance écrans → routes
+
+| Écran | Routes |
 |---|---|
-| `VALIDATION_FAILED` | Champ manquant/format, montant hors bornes, PIN de confirmation différent |
-| `REQUEST_REJECTED` | Lettre « O » dans l'id, carte bénéficiaire = sa carte, numéro invalide, trop d'OTP, nouveau PIN = ancien |
-| `UNAUTHENTICATED` | Identifiants incorrects, OTP incorrect/expiré |
-| `PIN_CODE_INVALID` | Code de vérification incorrect |
-| `PIN_TOO_WEAK` | PIN répétitif ou suite |
-| `FORBIDDEN` | PIN de paiement faux, verrouillage 15 min |
-| `DAILY_AMOUNT_LIMIT` | Plafond 500 000 FCFA / 24 h |
-| `INSUFFICIENT_FUNDS` | Solde insuffisant (frais compris) |
-| réseau / 5xx | Message générique + bouton réessayer |
+| Démarrage | session stockée ? → `GET /cards` (test) ; `GET /status` (bannière) |
+| Connexion | `GET /auth/customer/channels` → `POST /auth/customer/login/init` → `POST /auth/customer/login/confirm` (avec `device` et `merchantReferralCode` = code d'invitation) |
+| Code secret | `pin/setup/request` → `POST /auth/customer/pin` ; `pin/change` ; `pin/reset/request` → `pin/reset/confirm` |
+| Accueil | `GET /cards`, `GET /cards/balance/:id`, `GET /notifications/unread-count`, `GET /catalog/services`, `GET /status` |
+| Historique | `GET /cards/transactions/:id` (relevé émetteur, par période) ; `GET /operations` (paginé) |
+| Reçu | `GET /cards/operations/:id` ou `GET /operations/:id` |
+| Envoyer | `POST /cards/transfer/initiate` → `POST /cards/operations/:id/execute` (PIN) ou `/cards/operations/confirm` (OTP) |
+| Retirer vers Mobile Money | `GET /external-wallets/channels` → `POST /cards/to-mobile-money/initiate` → execute / confirm |
+| Recharger ma carte | catalogue `wallet-to-card` : `POST /catalog/quote` → `POST /catalog/confirm` → validation téléphone ou code B-MO (`/commerce/operations/:id/funding/confirm`) |
+| Crédit, forfait, électricité, TV, retrait guichet | `GET /catalog/lookup/...` → `POST /catalog/quote` → `POST /catalog/confirm` (PIN) → suivi |
+| Ma carte | `PATCH /cards/status` ; `POST /cards/display/authorize` → WebView sur `displayUrl` (60 s, usage unique) |
+| Notifications | `GET /notifications`, `POST /notifications/:id/read`, `POST /notifications/read-all`, `DELETE /notifications/:id` |
+| Profil / sécurité | `GET`/`PATCH /auth/customer/preferences`, `GET`/`DELETE /auth/customer/devices`, `logout`, `logout-all` |
 
-Les messages affichés viennent de l'API quand ils existent ; sinon d'une table de messages FR côté app.
+### 6.4 Écarts entre la maquette et l'API
 
-### 6.3 Endpoints à confirmer avec le backend
+- **Invitation** : aucune route de vérification. Le code est conservé localement et envoyé comme `merchantReferralCode` à `login/confirm`.
+- **Liste d'attente** et **publicités** : aucune route dans l'API. Servies uniquement par le faux backend (`POST /waitlist`, `GET /promotions`) ; à arbitrer avec le produit/backend.
+- **Relevé émetteur** : pas de sens débit/crédit ; l'app le déduit de l'évolution de `runningBalance` (à confirmer avec l'équipe API).
+- **Push** : non implémenté côté API ; la pastille interroge `unread-count`.
 
-**Onboarding / Auth**
-- `POST /v1/invitations/verify` `{code}` → `{inviterName}`
-- `POST /v1/waitlist` `{msisdn}` → `{position}`
-- `POST /v1/auth/login` `{cardId, last4, channel}` → `{challengeId, maskedDestination, expiresAt, sendsLeft}`
-- `POST /v1/auth/otp/resend` `{challengeId}`
-- `POST /v1/auth/otp/verify` `{challengeId, code, device}` → `{accessToken, refreshToken, hasPin}`
-- `POST /v1/auth/refresh`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all`
+### 6.5 Faux backend (`core/network/fake`)
 
-**PIN**
-- `POST /v1/pin/verification` (envoi du code SMS+e-mail) / `POST /v1/pin/verification/confirm`
-- `POST /v1/pin` (création), `PUT /v1/pin` `{oldPin, newPin}`, `POST /v1/pin/reset` (lève le verrouillage)
-
-**Carte & solde**
-- `GET /v1/me` (titulaire), `GET /v1/card` (statut, gamme, émetteur, last4)
-- `GET /v1/card/balance`
-- `POST /v1/card/suspend`, `POST /v1/card/reactivate`, `POST /v1/card/lost`
-- `POST /v1/card/sensitive-display` → URL/jeton à usage unique valable 60 s (idéalement rendu par l'émetteur, PAN/CVV jamais stockés)
-
-**Services & paiements**
-- `GET /v1/services` (catalogue, disponibilité — ex. TV « Bientôt »/indisponible)
-- `GET /v1/services/data/plans?msisdn=` (forfaits à prix imposé)
-- `GET /v1/services/airtime/operator?msisdn=` (détection opérateur, bornes)
-- `POST /v1/quotes` `{service, amount?, planId?, target?, msisdn?, operator?, meter?, deliveryChannel?, contact?}` → `{quoteId, amount, fee, total, expiresAt, checks[], warnings[], beneficiary}`
-- `POST /v1/operations` `{quoteId, pin}` + `Idempotency-Key` → `{operationId, status}`
-- `GET /v1/operations/{id}` (polling 2–3 s tant que `PROCESSING`, avec `step` : `QUOTED / AUTHORIZED / AWAITING_USER_APPROVAL / PROCESSING / SUCCESS / FAILED`) — ou mise à jour via push/WebSocket
-- `GET /v1/operations?cursor=` (Mes opérations, avec `reason` si échec et `extra[]` : code électricité, code de retrait)
-
-**Historique**
-- `GET /v1/card/transactions?from=&cursor=` (relevé émetteur, dernier mois, avec solde après opération)
-
-**Notifications / profil / appareils**
-- `GET /v1/notifications`, `POST /v1/notifications/{id}/read`, `POST /v1/notifications/read-all`
-- `POST /v1/devices/push-token`
-- `GET /v1/preferences`, `PUT /v1/preferences` `{channel: SMS|EMAIL|WHATSAPP|null}`
-- `GET /v1/devices`, `DELETE /v1/devices/{id}`
-
-**Contenu**
-- `GET /v1/promotions?placement=home|receipt|history` → `{id, placement, priority, eyebrow, title, body, cta, action{type: url|service, target}, theme}`
-- `GET /v1/status` → incidents opérateurs
-
-### 6.4 Repository type
-
-```dart
-abstract interface class PaymentRepository {
-  Future<Result<Quote>> createQuote(QuoteRequest req);
-  Future<Result<Operation>> execute({required String quoteId, required String pin});
-  Stream<Operation> watch(String operationId); // polling ou push
-}
-```
-
-Les DTO restent dans `data/`, convertis en entités `domain` (`toEntity()`). Les montants sont des `int` en FCFA (pas de `double`).
+Un intercepteur Dio sert le contrat en mémoire quand `USE_FAKE_API=true` (valeur actuelle de tous les environnements). `FakeDb` stocke l'état au format JSON de l'API ; un handler par domaine reproduit chemins, corps acceptés (champ inconnu → 400 comme l'API), réponses, codes et messages d'erreur. Passer au vrai backend = `USE_FAKE_API=false` + `API_BASE_URL` + `KONEKT_APP_ID`.
 
 ---
 
@@ -308,6 +268,7 @@ Les DTO restent dans `data/`, convertis en entités `domain` (`toEntity()`). Les
 
 - PIN et OTP : saisis via le pavé interne (pas de clavier système), jamais loggés ni persistés ; effacés de l'état après usage.
 - Vérification du PIN côté serveur uniquement ; le compteur d'essais et le verrouillage (5 essais, 15 min) viennent de l'API. La détection de PIN faible côté app n'est qu'un confort.
+- Affichage PAN/CVV : l'app ne reçoit qu'une URL à usage unique (60 s) chargée dans une WebView détruite à la fermeture ; les données vont du coffre VGS à l'écran sans passer par l'app.
 - `FLAG_SECURE`/protection capture sur : affichage carte, saisie PIN, devis/reçu sensibles. Masquage dans le sélecteur d'apps.
 - Tokens dans `flutter_secure_storage` (Keychain / Keystore). Session unique par carte.
 - Déconnexion à l'inactivité (à définir avec le métier) et à la révocation d'appareil.

@@ -2,15 +2,15 @@
 
 Découpage par lots, dans l'ordre conseillé. `[x]` = implémenté et testé contre le faux backend ; reste à brancher sur l'API réelle (lot 0). Voir `ARCHITECTURE.md` pour les choix techniques. Règles métier extraites de la maquette `Card Konekt Material`.
 
-## Lot 0 — Cadrage (bloquant)
+## Lot 0 — Cadrage
 
-- [ ] Valider avec le backend le contrat d'API (endpoints, format d'erreur, codes, pagination) — liste proposée dans `ARCHITECTURE.md` §6.3
-- [ ] Obtenir un environnement de dev/staging + un mock (OpenAPI/Swagger ou Postman)
-- [ ] Préciser : polling vs push/WebSocket pour le statut des opérations
-- [ ] Préciser : affichage PAN/CVV (page/SDK de l'émetteur UBA ou données brutes chiffrées ?)
-- [ ] Préciser : délai d'inactivité avant déconnexion, détection root/jailbreak
-- [ ] Récupérer les textes définitifs, la grille de frais officielle et les plafonds (la maquette utilise des valeurs simulées)
-- [ ] Créer le projet Firebase (Android + iOS) pour les notifications push
+- [x] Contrat d'API : guide d'intégration CardConnect v2 reçu (`docs/GUIDE-INTEGRATION-KONEKT.md`) ; l'app et le faux backend y sont alignés
+- [ ] Obtenir `KONEKT_APP_ID` et les hôtes dev / staging / prod (les hôtes staging/prod dans `env/*.json` sont provisoires)
+- [ ] Décider avec le produit : liste d'attente et publicités (aucune route dans l'API)
+- [ ] Confirmer avec l'équipe API comment distinguer débit et crédit dans le relevé émetteur (`GET /cards/transactions`)
+- [ ] Suivre les points ouverts côté API (guide Partie 9), notamment : idempotence partagée entre porteurs, `PATCH /cards/status` sans PIN, plafond d'affichage par marchand, push non implémenté
+- [ ] Vérifier côté API `CARD_DISPLAY_PAGE_URL` (doit inclure `/api/v1/card-display` et viser l'environnement courant)
+- [ ] Créer le projet Firebase (Android + iOS) pour les notifications push (dès que l'API les envoie)
 
 ## Lot 1 — Socle technique
 
