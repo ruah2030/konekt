@@ -78,10 +78,10 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
             children: [
               Center(
                 child: Image.asset(
-                  'assets/images/logo-full.png',
+                  'assets/images/logo-konekt.png',
                   key: const Key('splash-logo'),
-                  height: 175,
-                  semanticLabel: 'myCard Konekt',
+                  width: 160,
+                  semanticLabel: 'Konekt',
                 ),
               ),
               Positioned(

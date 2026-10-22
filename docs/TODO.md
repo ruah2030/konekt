@@ -1,4 +1,4 @@
-# myCard Konekt — Liste des tâches
+# Konekt — Liste des tâches
 
 Découpage par lots, dans l'ordre conseillé. `[x]` = implémenté et testé contre le faux backend ; reste à brancher sur l'API réelle (lot 0). Voir `ARCHITECTURE.md` pour les choix techniques. Règles métier extraites de la maquette `Card Konekt Material`.
 
@@ -115,7 +115,7 @@ Découpage par lots, dans l'ordre conseillé. `[x]` = implémenté et testé con
 - [x] Préférence de canal : SMS / E-mail / WhatsApp / Auto
 - [x] Se déconnecter ; déconnecter tous les appareils (confirmation)
 - [x] **Appareils connectés** : liste (type, « actif maintenant » / « vu … »), « Cet appareil », déconnexion d'un appareil (si appareil courant → retour login)
-- [x] Mention version « MYCARD KONEKT 2.0 · POWERED BY BESTCASH »
+- [x] Mention version « KONEKT 2.0 · POWERED BY BESTCASH »
 
 ## Lot 12 — Transverse & mise en production
 

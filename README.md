@@ -1,6 +1,6 @@
-# myCard Konekt
+# Konekt
 
-Application mobile Flutter (Android / iOS) de la carte virtuelle **myCard Konekt 2.0**, powered by BestCash.
+Application mobile Flutter (Android / iOS) de la carte virtuelle **Konekt 2.0**, powered by BestCash.
 
 - Architecture et contrat d'API : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Avancement : [`docs/TODO.md`](docs/TODO.md)

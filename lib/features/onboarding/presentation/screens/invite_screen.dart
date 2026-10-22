@@ -350,7 +350,7 @@ class _OnboardingVideoState extends State<_OnboardingVideo> {
         ),
       ),
       alignment: Alignment.center,
-      child: Image.asset('assets/images/logo-full.png', width: 140),
+      child: Image.asset('assets/images/logo-konekt.png', width: 140),
     );
   }
 }

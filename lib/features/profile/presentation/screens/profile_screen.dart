@@ -92,7 +92,7 @@ class ProfileScreen extends ConsumerWidget {
               const _SessionCard(),
               const SizedBox(height: 22),
               Text(
-                'MYCARD KONEKT $version · POWERED BY BESTCASH',
+                'KONEKT $version · POWERED BY BESTCASH',
                 key: const Key('profile-version'),
                 textAlign: TextAlign.center,
                 style: const TextStyle(

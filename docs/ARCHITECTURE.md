@@ -1,6 +1,6 @@
-# myCard Konekt — Architecture Flutter
+# Konekt — Architecture Flutter
 
-Document de référence pour développer l'application mobile **myCard Konekt 2.0** (powered by BestCash) à partir de la maquette `Card Konekt Material` (Flutter · Material 3).
+Document de référence pour développer l'application mobile **Konekt 2.0** (powered by BestCash) à partir de la maquette `Card Konekt Material` (Flutter · Material 3).
 
 > L'app consomme l'**API CardConnect v2** décrite dans [`GUIDE-INTEGRATION-KONEKT.md`](GUIDE-INTEGRATION-KONEKT.md), qui fait foi.
 > Tant que l'API n'est pas branchée, un faux backend en mémoire reproduit ce contrat (section 6).
