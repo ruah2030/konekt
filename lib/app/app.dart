@@ -14,7 +14,7 @@ class KonektApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp.router(
-      title: 'myCard Konekt',
+      title: 'Konekt',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(useGoogleFonts: useGoogleFonts),
       routerConfig: ref.watch(routerProvider),
