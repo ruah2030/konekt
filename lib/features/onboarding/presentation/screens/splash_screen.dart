@@ -17,6 +17,7 @@ class SplashScreen extends ConsumerStatefulWidget {
 
   static const progressDuration = Duration(milliseconds: 2600);
   static const minDisplay = Duration(milliseconds: 2900);
+  static const maxDisplay = Duration(seconds: 15);
 
   @override
   ConsumerState<SplashScreen> createState() => _SplashScreenState();
@@ -26,6 +27,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
   late final AnimationController _progress = AnimationController(vsync: this, duration: SplashScreen.progressDuration)
     ..forward();
   Timer? _timer;
+  Timer? _safety;
   bool _timeUp = false;
   bool _navigated = false;
 
@@ -36,19 +38,22 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
       _timeUp = true;
       _maybeLeave();
     });
+    // Filet de sécurité : le splash ne reste jamais bloqué, même si la session ne se restaure pas.
+    _safety = Timer(SplashScreen.maxDisplay, () => _maybeLeave(force: true));
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _safety?.cancel();
     _progress.dispose();
     super.dispose();
   }
 
-  void _maybeLeave() {
+  void _maybeLeave({bool force = false}) {
     if (!mounted || _navigated || !_timeUp) return;
     final auth = ref.read(authControllerProvider);
-    if (auth.status == AuthStatus.unknown) return;
+    if (auth.status == AuthStatus.unknown && !force) return;
     _navigated = true;
     if (auth.isAuthenticated) {
       // Le routeur redirige vers la création du code secret si nécessaire.

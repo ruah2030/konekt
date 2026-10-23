@@ -20,8 +20,21 @@ class SecureStore {
   CardSession? _cardSessionCache;
 
   /// Jeton de session (`Authorization: Bearer …`).
-  Future<String?> get sessionToken async => _sessionCache ??= await _s.read(key: _sessionTokenKey);
-  Future<String?> get refreshToken => _s.read(key: _refreshTokenKey);
+  Future<String?> get sessionToken async => _sessionCache ??= await _read(_sessionTokenKey);
+  Future<String?> get refreshToken => _read(_refreshTokenKey);
+
+  /// Lecture tolérante : un stockage illisible (clés de chiffrement changées après une réinstallation,
+  /// restauration de sauvegarde…) est vidé et traité comme « pas de session ».
+  Future<String?> _read(String key) async {
+    try {
+      return await _s.read(key: key);
+    } catch (_) {
+      try {
+        await _s.deleteAll();
+      } catch (_) {}
+      return null;
+    }
+  }
 
   /// Remplace TOUJOURS les deux jetons ensemble (le refresh token est à usage unique).
   Future<void> saveTokens({required String session, required String refresh}) async {
@@ -33,9 +46,14 @@ class SecureStore {
   /// Carte de la session (identifiant émetteur, titulaire, `hasPin`…).
   Future<CardSession?> get cardSession async {
     if (_cardSessionCache != null) return _cardSessionCache;
-    final raw = await _s.read(key: _sessionKey);
+    final raw = await _read(_sessionKey);
     if (raw == null) return null;
-    return _cardSessionCache = CardSession.fromJson(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+    try {
+      return _cardSessionCache = CardSession.fromJson(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+    } catch (_) {
+      await clear();
+      return null;
+    }
   }
 
   Future<void> saveCardSession(CardSession session) async {
@@ -47,9 +65,15 @@ class SecureStore {
   Future<void> clear() async {
     _sessionCache = null;
     _cardSessionCache = null;
-    await _s.delete(key: _sessionTokenKey);
-    await _s.delete(key: _refreshTokenKey);
-    await _s.delete(key: _sessionKey);
+    try {
+      await _s.delete(key: _sessionTokenKey);
+      await _s.delete(key: _refreshTokenKey);
+      await _s.delete(key: _sessionKey);
+    } catch (_) {
+      try {
+        await _s.deleteAll();
+      } catch (_) {}
+    }
   }
 }
 

@@ -30,10 +30,24 @@ class AuthController extends Notifier<AuthState> {
 
   AuthRepository get _repo => ref.read(authRepositoryProvider);
 
+  /// Restauration au démarrage. Ne doit JAMAIS laisser l'état à `unknown` : le splash l'attend.
+  /// Stockage sécurisé illisible (réinstallation, clés changées…), erreur ou délai dépassé →
+  /// session effacée et retour à l'écran de connexion.
   Future<void> _restore() async {
-    final session = await _repo.restore();
+    CardSession? session;
+    try {
+      session = await _repo.restore().timeout(restoreTimeout);
+    } catch (_) {
+      session = null;
+      try {
+        await ref.read(secureStoreProvider).clear();
+      } catch (_) {}
+    }
+    if (!ref.mounted || state.status != AuthStatus.unknown) return;
     state = session == null ? const AuthState.unauthenticated() : AuthState.authenticated(session);
   }
+
+  static const restoreTimeout = Duration(seconds: 10);
 
   /// Après `login/confirm`.
   void signedIn(CardSession session) {
