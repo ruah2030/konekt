@@ -1,13 +1,17 @@
 # Règles R8 (minification des builds release).
 #
 # shared_preferences_android ≥ 2.5 est généré par jnigen : le code Dart appelle les méthodes Kotlin
-# PAR LEUR NOM via JNI (ex. SharedPreferencesApiRegistrar.getAll). Sans ces règles, R8 les supprime
-# ou les renomme et l'app plante au démarrage en release (NoSuchMethodError), splash figé.
+# PAR LEUR NOM via JNI (ex. SharedPreferencesApiRegistrar.getAll), et ces méthodes s'appuient sur les
+# coroutines Kotlin (fonctions suspend). R8 ne voit pas ces appels : il supprimait ou renommait les
+# classes du plugin puis des classes internes de Kotlin (NoSuchMethodError, ClassNotFoundException
+# CoroutineSingletons) → plantage au démarrage en release, splash figé.
 -keep class io.flutter.plugins.sharedpreferences.** { *; }
 
-# Les signatures appelées par JNI contiennent des types Kotlin (fonctions suspend) : ne pas les renommer.
--keep class kotlin.coroutines.Continuation { *; }
--keep class kotlin.jvm.functions.** { *; }
+# Bibliothèque standard Kotlin et coroutines : conservées entières (les signatures et classes internes
+# utilisées via JNI ne sont pas visibles par R8).
+-keep class kotlin.** { *; }
+-keep class kotlinx.coroutines.** { *; }
+-dontwarn kotlinx.coroutines.**
 
 # Pont JNI de Dart (déjà protégé par ses propres règles, rappelé par sécurité).
 -keep class com.github.dart_lang.jni.** { *; }
