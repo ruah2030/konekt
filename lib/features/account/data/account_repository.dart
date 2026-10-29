@@ -96,10 +96,22 @@ class AccountRepository {
       (await _dio.get<Map<String, dynamic>>(path, queryParameters: q)).data!;
 
   /// `GET /cards` (carte émise sur la plateforme) ; carte externe → `GET /cards/details/:id`.
+  ///
+  /// Le statut de `GET /cards` n'est qu'une copie : il est remplacé par l'état réel chez l'émetteur
+  /// (`GET /cards/details`, guide Partie 4 §1 et §4), qui fait foi. Si `details` est refusé (carte connue
+  /// comme perdue ou désactivée → 400), la fiche de `GET /cards` est conservée telle quelle.
   Future<CardInfo> card(String cardCustomerId) async {
     final list = (await _get('/cards')).list('data');
-    if (list.isNotEmpty) return CardInfo.fromCardsItem(list.first);
-    return details(cardCustomerId);
+    if (list.isEmpty) return details(cardCustomerId);
+    final base = CardInfo.fromCardsItem(list.first);
+    try {
+      final real = await details(cardCustomerId);
+      return base.copyWith(status: real.status, last4: real.last4.isEmpty ? null : real.last4);
+    } on DioException catch (e) {
+      final status = e.response?.statusCode ?? 0;
+      if (status == 400 || status == 404 || status >= 500) return base;
+      rethrow;
+    }
   }
 
   /// État réel chez l'émetteur (fait foi sur la liste).

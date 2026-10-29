@@ -16,13 +16,20 @@ final cardSessionProvider = Provider<CardSession?>((ref) => ref.watch(authContro
 
 class AuthController extends Notifier<AuthState> {
   StreamSubscription<void>? _expiredSub;
+  StreamSubscription<String>? _blockedSub;
 
   @override
   AuthState build() {
     _expiredSub = ref.watch(sessionExpiredProvider).stream.listen((_) {
       if (state.status != AuthStatus.unauthenticated) _clearSession();
     });
-    ref.onDispose(() => _expiredSub?.cancel());
+    _blockedSub = ref.watch(cardBlockedProvider).stream.listen((message) {
+      if (state.status != AuthStatus.unauthenticated) _clearSession(notice: message);
+    });
+    ref.onDispose(() {
+      _expiredSub?.cancel();
+      _blockedSub?.cancel();
+    });
     Future.microtask(_restore);
     return const AuthState.unknown();
   }
@@ -82,13 +89,13 @@ class AuthController extends Notifier<AuthState> {
   /// Session terminée localement (appareil courant déconnecté, révocation…).
   void sessionEnded() => _clearSession();
 
-  void _clearSession() {
+  void _clearSession({String? notice}) {
     // Les jetons locaux sont toujours effacés : un `restore()` ultérieur ne doit pas rouvrir la session.
     unawaited(ref.read(secureStoreProvider).clear());
     ref.read(loginChallengeProvider.notifier).clear();
     // Les données de compte dépendent de la session (account_providers.dart) : elles se réinitialisent
     // d'elles-mêmes. Ne pas les invalider d'ici (dépendance circulaire refusée par Riverpod).
-    state = const AuthState.unauthenticated();
+    state = AuthState.unauthenticated(notice: notice);
   }
 }
 

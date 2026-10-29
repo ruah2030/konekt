@@ -19,6 +19,14 @@ final sessionExpiredProvider = Provider<StreamController<void>>((ref) {
   return c;
 });
 
+/// Émet le message du serveur quand le renouvellement de session est refusé en 403 : la carte a été
+/// bloquée depuis la connexion (guide §2.5). L'app affiche alors un écran d'information + support.
+final cardBlockedProvider = Provider<StreamController<String>>((ref) {
+  final c = StreamController<String>.broadcast();
+  ref.onDispose(c.close);
+  return c;
+});
+
 final appVersionProvider = Provider<String>((ref) => '2.0.0');
 
 /// `CardKonekt/2.0.0 (Android)` — recommandé par le guide (§1.3).
@@ -72,6 +80,7 @@ final dioProvider = Provider<Dio>((ref) {
       refreshDio: refreshDio,
       retryDio: retryDio,
       onSessionExpired: () => ref.read(sessionExpiredProvider).add(null),
+      onCardBlocked: (message) => ref.read(cardBlockedProvider).add(message),
     ),
   );
   dio.interceptors.add(ErrorMappingInterceptor());

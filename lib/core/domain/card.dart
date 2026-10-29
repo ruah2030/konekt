@@ -105,9 +105,9 @@ class CardInfo {
   final String? email;
   final String? phone;
 
-  CardInfo copyWith({CardStatus? status}) => CardInfo(
+  CardInfo copyWith({CardStatus? status, String? last4}) => CardInfo(
     cardCustomerId: cardCustomerId,
-    last4: last4,
+    last4: last4 ?? this.last4,
     status: status ?? this.status,
     product: product,
     issuer: issuer,

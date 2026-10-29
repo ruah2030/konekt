@@ -35,12 +35,16 @@ class AuthInterceptor extends QueuedInterceptor {
     required this.refreshDio,
     required this.retryDio,
     required this.onSessionExpired,
+    this.onCardBlocked,
   });
 
   final SecureStore store;
   final Dio refreshDio;
   final Dio retryDio;
   final void Function() onSessionExpired;
+
+  /// Refresh refusé en 403 : carte bloquée depuis la connexion (§2.5) → écran d'information + support.
+  final void Function(String message)? onCardBlocked;
 
   /// Routes appelées SANS `Authorization` (un jeton joint y est ignoré ou refusé).
   static const publicPaths = {
@@ -98,9 +102,19 @@ class AuthInterceptor extends QueuedInterceptor {
       opts.extra['retried'] = true;
       // Rejeu sûr : sur SESSION_EXPIRED le serveur n'a rien exécuté (recette §7.2).
       handler.resolve(await retryDio.fetch<dynamic>(opts));
-    } catch (_) {
+    } catch (e) {
       await store.clear();
-      onSessionExpired();
+      final blocked = e is DioException && e.response?.statusCode == 403;
+      if (blocked && onCardBlocked != null) {
+        final body = e.response?.data;
+        onCardBlocked!(
+          body is Map && body['message'] is String
+              ? body['message'] as String
+              : 'Votre carte a été bloquée. Contactez le support.',
+        );
+      } else {
+        onSessionExpired();
+      }
       handler.next(err);
     }
   }

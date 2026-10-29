@@ -158,6 +158,15 @@ void registerAuthHandlers(FakeApi api) {
       if (!db.consumeRefreshToken('${r.body['refreshToken']}')) {
         return FakeResponse.error(401, 'UNAUTHENTICATED', 'Jeton de renouvellement invalide, expiré ou déjà utilisé.');
       }
+      if (db.cardStatus == 'LostOrStolen' || db.cardStatus == 'Deactivated') {
+        return FakeResponse.error(
+          403,
+          'FORBIDDEN',
+          db.cardStatus == 'LostOrStolen'
+              ? 'Cette carte a été déclarée perdue ou volée. Contactez le support : vos fonds peuvent être transférés sur une nouvelle carte.'
+              : 'Cette carte a été désactivée. Contactez le support — vos fonds ne sont pas perdus.',
+        );
+      }
       final t = db.issueTokens();
       return FakeResponse.ok({
         'success': true,

@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:konekt/core/domain/card.dart';
 import 'package:konekt/core/network/api_failure.dart';
 import 'package:konekt/core/network/dio_client.dart';
 import 'package:konekt/core/network/fake/fake_api.dart';
@@ -109,5 +110,44 @@ void main() {
     final notifs = await repo.notifications();
     expect(notifs.unreadCount, 2);
     expect(await repo.unreadCount(), 2);
+  });
+
+  test('statut de carte : l’état réel chez l’émetteur (details) fait foi sur la copie de GET /cards', () async {
+    final env = await TestEnv.create(signedIn: true);
+    env.db
+      ..cardStatus = 'Inactive'
+      ..platformCopyStatus = 'Active';
+    final c = env.container();
+    addTearDown(c.dispose);
+    await TestEnv.waitForAuth(c);
+    final card = await c.read(accountRepositoryProvider).card('121436474');
+    expect(card.status, CardStatus.inactive);
+    expect(card.product, 'Virtual Standard - UBA BJ', reason: 'gamme lue sur GET /cards');
+  });
+
+  test('statut de carte : details refusé (carte perdue connue) → fiche de GET /cards conservée', () async {
+    final env = await TestEnv.create(signedIn: true);
+    env.db.cardStatus = 'LostOrStolen';
+    final c = env.container();
+    addTearDown(c.dispose);
+    await TestEnv.waitForAuth(c);
+    final card = await c.read(accountRepositoryProvider).card('121436474');
+    expect(card.status, CardStatus.lostOrStolen);
+  });
+
+  test('carte bloquée depuis la connexion : refresh refusé (403) → déconnexion avec message (§2.5)', () async {
+    final env = await TestEnv.create(signedIn: true);
+    final c = env.container();
+    addTearDown(c.dispose);
+    await TestEnv.waitForAuth(c);
+    env.db
+      ..cardStatus = 'LostOrStolen'
+      ..revokeSessionToken(await env.store.sessionToken); // le prochain appel doit renouveler la session
+    await expectLater(c.read(accountRepositoryProvider).balance('121436474'), throwsA(isA<DioException>()));
+    await Future<void>.delayed(Duration.zero);
+    final auth = c.read(authControllerProvider);
+    expect(auth.status, AuthStatus.unauthenticated);
+    expect(auth.notice, contains('perdue ou volée'));
+    expect(await env.store.sessionToken, isNull);
   });
 }

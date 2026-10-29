@@ -48,7 +48,11 @@ class FakeDb {
 
   // ---------------- Scénario ----------------
   /// Statut de la carte : `Active` | `Inactive` | `PreActive` | `LostOrStolen` | `Deactivated`.
+  /// C'est l'état réel chez l'émetteur (`GET /cards/details`).
   String cardStatus;
+
+  /// Copie plateforme renvoyée par `GET /cards`, si elle est en retard sur l'émetteur (null = à jour).
+  String? platformCopyStatus;
   bool incident;
   bool adsEnabled;
 
@@ -76,7 +80,7 @@ class FakeDb {
   Map<String, dynamic> cardJson() => {
     'id': 'clcd_konekt_demo',
     'type': 'VIRTUAL',
-    'status': cardStatus,
+    'status': platformCopyStatus ?? cardStatus,
     'customerId': sessionCardId,
     'last4': last4,
     'cardTierSlug': 'virtual:uba-bj:visa-prepaid-card:6-month',

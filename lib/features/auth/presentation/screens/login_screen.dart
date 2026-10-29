@@ -10,7 +10,9 @@ import '../../../../app/router/routes.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
 import '../../domain/auth_models.dart';
+import '../providers/auth_controller.dart';
 import '../providers/login_controller.dart';
+import 'otp_screen.dart';
 
 /// Connexion par carte : identifiant + 4 derniers chiffres, puis code à usage unique.
 class LoginScreen extends ConsumerStatefulWidget {
@@ -43,6 +45,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final s = ref.watch(loginControllerProvider);
     final ctrl = ref.read(loginControllerProvider.notifier);
     final platform = ref.watch(platformStatusProvider).value;
+    final notice = ref.watch(authControllerProvider.select((a) => a.notice));
     final channels = s.channels;
     final unavailable = channels == null
         ? const <OtpChannel>[]
@@ -69,6 +72,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         alignment: Alignment.centerLeft,
                         child: Image.asset('assets/images/logo-mark.png', width: 64),
                       ),
+                      if (notice != null) ...[const SizedBox(height: 28), _SessionEndedNotice(notice)],
                       if (platform != null && platform.hasIncident) ...[
                         const SizedBox(height: 28),
                         IncidentBanner(platform.message),
@@ -206,4 +210,38 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       ),
     );
   }
+}
+
+/// Fin de session imposée (carte bloquée depuis la connexion, guide §2.5) : motif + accès au support.
+class _SessionEndedNotice extends StatelessWidget {
+  const _SessionEndedNotice(this.message);
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: const Key('login-session-ended'),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(color: KColors.errorContainer, borderRadius: BorderRadius.circular(14)),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Votre session a été fermée',
+          style: TextStyle(color: KColors.onErrorContainer, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          message,
+          style: const TextStyle(color: KColors.onErrorContainer, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        TextButton(
+          key: const Key('login-contact-support'),
+          style: TextButton.styleFrom(padding: EdgeInsets.zero, foregroundColor: KColors.onErrorContainer),
+          onPressed: () => showToast(context, OtpScreen.supportMessage),
+          child: const Text('Contacter le support'),
+        ),
+      ],
+    ),
+  );
 }

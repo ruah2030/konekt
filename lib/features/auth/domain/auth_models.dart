@@ -83,15 +83,19 @@ class LoginChallenge {
 enum AuthStatus { unknown, unauthenticated, authenticated }
 
 class AuthState {
-  const AuthState(this.status, {this.session});
+  const AuthState(this.status, {this.session, this.notice});
   const AuthState.unknown() : this(AuthStatus.unknown);
-  const AuthState.unauthenticated() : this(AuthStatus.unauthenticated);
+  const AuthState.unauthenticated({String? notice}) : this(AuthStatus.unauthenticated, notice: notice);
   const AuthState.authenticated(CardSession session) : this(AuthStatus.authenticated, session: session);
 
   final AuthStatus status;
 
   /// Carte de la session (présente si authentifié).
   final CardSession? session;
+
+  /// Message à afficher sur l'écran de connexion après une fin de session imposée
+  /// (ex. carte bloquée depuis la connexion, guide §2.5).
+  final String? notice;
 
   /// Faux tant que le code secret n'a pas été créé (création obligatoire avant tout le reste).
   bool get hasPin => session?.hasPin ?? false;
