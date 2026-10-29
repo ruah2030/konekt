@@ -21,6 +21,7 @@ void main() {
     await env.pumpScreen(tester, const SecureDisplayScreen());
     expect(calls, contains('enable'));
     await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
     expect(calls.last, 'disable');
   });
 
@@ -40,5 +41,7 @@ void main() {
     await tester.pump();
     expect(find.text(SecureDisplayScreenWarning.text), findsOneWidget);
     expect(ScreenSecurity.screenshots, isNotNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
   });
 }
