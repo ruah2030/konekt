@@ -49,6 +49,8 @@ class PaymentFlowState {
     this.needsRequote = false,
     this.restartRequired = false,
     this.trackingSince,
+    this.confirmSent = false,
+    this.recoveredOperationId,
   });
 
   final PaymentRequest? request;
@@ -75,8 +77,21 @@ class PaymentFlowState {
   final bool restartRequired;
   final DateTime? trackingSince;
 
+  /// Une confirmation du catalogue est partie sans réponse certaine (coupure réseau, 5xx,
+  /// « déjà en cours de traitement ») : le paiement a peut-être abouti. Dès lors, JAMAIS de nouveau
+  /// devis ni de nouvelle `reference` : on renvoie la même ou on suit l'opération (règle d'or n° 3).
+  final bool confirmSent;
+
+  /// Opération retrouvée par sa `reference` (catalogue sans `operationId` connu).
+  final String? recoveredOperationId;
+
+  /// Paiement du catalogue au sort incertain dont l'opération reste à retrouver par sa `reference`.
+  bool get canSearchOperation =>
+      operationId == null && confirmSent && reference != null && quote != null && !quote!.isCardOperation;
+
   /// Opération à suivre.
-  String? get operationId => execution?.operationId ?? (review != null ? quote?.operationId : null);
+  String? get operationId =>
+      execution?.operationId ?? recoveredOperationId ?? (review != null ? quote?.operationId : null);
 
   /// `awaiting` courant (exécution, puis suivi).
   String? get awaiting {
@@ -99,6 +114,8 @@ class PaymentFlowState {
     bool? needsRequote,
     bool? restartRequired,
     DateTime? Function()? trackingSince,
+    bool? confirmSent,
+    String? Function()? recoveredOperationId,
   }) => PaymentFlowState(
     request: request,
     quote: quote == null ? this.quote : quote(),
@@ -114,6 +131,8 @@ class PaymentFlowState {
     needsRequote: needsRequote ?? this.needsRequote,
     restartRequired: restartRequired ?? this.restartRequired,
     trackingSince: trackingSince == null ? this.trackingSince : trackingSince(),
+    confirmSent: confirmSent ?? this.confirmSent,
+    recoveredOperationId: recoveredOperationId == null ? this.recoveredOperationId : recoveredOperationId(),
   );
 }
 
@@ -169,7 +188,7 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
   /// attente est annulée avant d'en initier une nouvelle (nouveau `requestId`).
   Future<bool> requote() async {
     final request = state.request;
-    if (request == null) return false;
+    if (request == null || state.confirmSent) return false;
     await abandon();
     state = state.copyWith(quoting: true, quoteError: () => null);
     final failure = await _quote(request);
@@ -197,7 +216,7 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
     final q = state.quote;
     final request = state.request;
     if (q == null || request == null || state.submitting) return SecretOutcome.retry;
-    if (!q.isCardOperation && q.isExpired(_now())) {
+    if (!q.isCardOperation && !state.confirmSent && q.isExpired(_now())) {
       // PIN vérifié avant le devis côté serveur : ne pas risquer un essai pour un devis périmé.
       state = state.copyWith(needsRequote: true);
       return SecretOutcome.requote;
@@ -229,11 +248,20 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
       return null;
     } catch (e) {
       final f = ApiFailure.from(e);
-      if (_uncertain(f)) {
-        state = state.copyWith(submitting: false, review: () => f, trackingSince: _now);
+      if (_uncertain(f) || _alreadyProcessing(f) || (state.confirmSent && _lostResponse(f))) {
+        _toReview(f);
         return null;
       }
-      state = state.copyWith(submitting: false, quoteError: () => f, needsRequote: _burnsQuote(f));
+      if (_lostResponse(f)) {
+        // Réponse perdue : la même référence sera renvoyée (idempotent), jamais une nouvelle.
+        state = state.copyWith(submitting: false, quoteError: () => _lostResponseFailure(f), confirmSent: true);
+        return f;
+      }
+      state = state.copyWith(
+        submitting: false,
+        quoteError: () => f,
+        needsRequote: !state.confirmSent && _burnsQuote(f),
+      );
       return f;
     }
   }
@@ -245,6 +273,32 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
       pinError: () => null,
       review: () => null,
       trackingSince: _now,
+    );
+  }
+
+  /// Coupure réseau ou délai dépassé : la requête est peut-être arrivée au serveur.
+  bool _lostResponse(ApiFailure f) => f.code == ErrorCodes.network || f.code == ErrorCodes.timeout;
+
+  /// « Une vente portant la référence … est déjà en cours de traitement » (§2.6) : un envoi précédent
+  /// avec la même référence est en cours — c'est un paiement à suivre, pas un refus.
+  bool _alreadyProcessing(ApiFailure f) =>
+      f.code == ErrorCodes.requestRejected && f.message.toLowerCase().contains('déjà en cours de traitement');
+
+  ApiFailure _lostResponseFailure(ApiFailure f) => ApiFailure(
+    code: f.code,
+    message:
+        'La connexion a été interrompue : le paiement a peut-être abouti. Réessayez pour vérifier — la même '
+        'demande sera renvoyée, sans risque de double paiement.',
+    ref: f.ref,
+  );
+
+  /// Sort incertain : écran « en vérification » et suivi de l'opération (retrouvée par sa référence au besoin).
+  void _toReview(ApiFailure f) {
+    state = state.copyWith(
+      submitting: false,
+      review: () => f,
+      trackingSince: _now,
+      confirmSent: state.quote?.isCardOperation == false ? true : null,
     );
   }
 
@@ -261,12 +315,12 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
 
   Future<SecretOutcome> _secretFailed(ApiFailure f) async {
     final q = state.quote!;
-    if (_uncertain(f)) {
-      state = state.copyWith(submitting: false, review: () => f, trackingSince: _now);
+    if (_uncertain(f) || (!q.isCardOperation && _alreadyProcessing(f))) {
+      _toReview(f);
       return SecretOutcome.submitted;
     }
-    if (f.code == ErrorCodes.network || f.code == ErrorCodes.timeout) {
-      // Réponse perdue : un nouvel envoi réutilise la même référence (idempotent).
+    if (_lostResponse(f)) {
+      // Réponse perdue : un nouvel envoi réutilise la même référence (idempotent), même si le devis expire.
       state = state.copyWith(
         submitting: false,
         pinError: () => ApiFailure(
@@ -276,6 +330,7 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
               'vérifier — la même demande sera renvoyée, sans risque de double paiement.',
           ref: f.ref,
         ),
+        confirmSent: q.isCardOperation ? null : true,
       );
       return SecretOutcome.retry;
     }
@@ -303,7 +358,13 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
       state = state.copyWith(submitting: false, pinError: () => f, restartRequired: expiredCode);
       return expiredCode ? SecretOutcome.restart : SecretOutcome.retry;
     }
-    final burns = !q.isCardOperation && _burnsQuote(f);
+    if (!q.isCardOperation && state.confirmSent && f.code == ErrorCodes.requestRejected) {
+      // Après un envoi incertain, un refus peut venir de ce que le premier envoi a déjà consommé le devis :
+      // on suit l'opération plutôt que de payer une seconde fois.
+      _toReview(f);
+      return SecretOutcome.submitted;
+    }
+    final burns = !q.isCardOperation && !state.confirmSent && _burnsQuote(f);
     state = state.copyWith(submitting: false, pinError: () => f, needsRequote: burns);
     return SecretOutcome.retry;
   }
@@ -353,7 +414,12 @@ class PaymentFlowController extends Notifier<PaymentFlowState> {
 
   /// Relit l'opération en cours (suivi de l'écran de traitement).
   Future<Operation?> refreshOperation() async {
-    final id = state.operationId;
+    var id = state.operationId;
+    if (id == null && state.canSearchOperation) {
+      id = await _repo.operationIdByReference(state.reference!);
+      if (id == null) return null;
+      state = state.copyWith(recoveredOperationId: () => id);
+    }
     if (id == null) return null;
     final fresh = await _repo.operation(id, sessionCardCustomerId: _cardId());
     state = state.copyWith(operation: () => fresh);

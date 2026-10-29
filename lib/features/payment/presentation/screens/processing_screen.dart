@@ -53,12 +53,13 @@ class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
   Future<void> _poll() async {
     if (_polling || _done || _timedOut || !mounted) return;
     final flow = ref.read(paymentFlowProvider);
-    if (flow.operationId == null) return;
+    if (flow.operationId == null && !flow.canSearchOperation) return;
     _polling = true;
     try {
+      // Sans identifiant (catalogue au sort incertain), l'opération est retrouvée par sa référence.
       final op = await ref.read(paymentFlowProvider.notifier).refreshOperation();
-      if (!mounted || op == null) return;
-      if (op.isFinal) {
+      if (!mounted) return;
+      if (op != null && op.isFinal) {
         _finish(op.id);
         return;
       }
@@ -235,7 +236,7 @@ class _ProcessingScreenState extends ConsumerState<ProcessingScreen> {
               style: t.labelMedium?.copyWith(color: KColors.onSurfaceVariant, height: 1.5, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 16),
-            if (review != null && flow.operationId == null)
+            if (review != null && flow.operationId == null && (_timedOut || !flow.canSearchOperation))
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: FilledButton(

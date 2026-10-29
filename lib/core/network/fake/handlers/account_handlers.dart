@@ -134,7 +134,18 @@ void registerAccountHandlers(FakeApi api) {
     final bad = _limitError(r.query, 100);
     if (bad != null) return bad;
     final status = r.query['status'] as String?;
-    final list = status == null ? db.operations : db.operations.where((o) => o['status'] == status).toList();
+    // `search` : `reference` ou `idempotencyKey` contient (insensible à la casse), ou `id` exact (§1.1).
+    final search = (r.query['search'] as String?)?.toLowerCase();
+    final list = db.operations
+        .where((o) => status == null || o['status'] == status)
+        .where(
+          (o) =>
+              search == null ||
+              o['id'] == r.query['search'] ||
+              '${o['reference'] ?? ''}'.toLowerCase().contains(search) ||
+              '${o['idempotencyKey'] ?? ''}'.toLowerCase().contains(search),
+        )
+        .toList();
     return FakeResponse.ok({'success': true, ...pageOf(list, r.query), 'stats': _stats(db.operations)});
   });
 

@@ -87,6 +87,17 @@ class PaymentRepository {
       _dio.delete<void>('/cards/operations/$operationId', data: {'reason': reason});
 
   /// `GET /cards/operations/:id` : suivi et reçu (`OperationStatusResponseDto`).
+  /// Retrouve l'opération créée par une confirmation du catalogue dont la réponse a été perdue
+  /// (`GET /operations?search=<reference>` : la `reference` est conservée dans `idempotencyKey`).
+  /// `null` si le serveur ne l'a pas (encore) enregistrée.
+  Future<String?> operationIdByReference(String reference) async {
+    final j = await _get('/operations', {'search': reference, 'limit': 5});
+    for (final o in j.list('data')) {
+      if (o['idempotencyKey'] == reference || o['reference'] == reference) return o['id'] as String?;
+    }
+    return null;
+  }
+
   Future<Operation> operation(String operationId, {String? sessionCardCustomerId}) async =>
       Operation.fromJson(await _get('/cards/operations/$operationId'), sessionCardCustomerId: sessionCardCustomerId);
 }
