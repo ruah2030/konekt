@@ -83,5 +83,7 @@
 		</array>
 		<key>UIStatusBarHidden</key>
 		<false/>
-	</dict>
+		<key>NSFaceIDUsageDescription</key>
+		<string>Konekt utilise Face ID pour confirmer les actions sensibles sur votre carte (suspension, déclaration de perte).</string>
+</dict>
 </plist>

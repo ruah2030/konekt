@@ -6,6 +6,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../../../../app/router/routes.dart';
 import '../../../../core/domain/card.dart';
 import '../../../../core/network/api_failure.dart';
+import '../../../../core/security/device_auth.dart';
 import '../../../../design_system/design_system.dart';
 import '../../../account/presentation/account_providers.dart';
 import '../../../auth/presentation/providers/auth_controller.dart';
@@ -51,6 +52,13 @@ enum CardStatusChange {
     required this.message,
   });
 
+  /// Motif affiché par le système lors du déverrouillage du téléphone.
+  String get deviceAuthReason => switch (this) {
+    CardStatusChange.suspend => 'Confirmez la suspension de votre carte Konekt',
+    CardStatusChange.reactivate => 'Confirmez la réactivation de votre carte Konekt',
+    CardStatusChange.lost => 'Confirmez la déclaration de perte de votre carte Konekt',
+  };
+
   final String title;
   final String body;
   final String cta;
@@ -58,6 +66,9 @@ enum CardStatusChange {
   final Color color;
   final String message;
 }
+
+/// Déverrouillage du téléphone annulé ou refusé : rien n'est envoyé au serveur.
+const deviceAuthRefusedMessage = 'Vérification annulée : l’état de votre carte n’a pas été modifié.';
 
 /// Texte ajouté à l'avertissement quand la carte est suspendue : l'API impose deux appels
 /// (réactivation, puis déclaration de perte — point ouvert n°7).
@@ -75,7 +86,8 @@ class CardScreen extends ConsumerStatefulWidget {
 class _CardScreenState extends ConsumerState<CardScreen> {
   bool _busy = false;
 
-  /// L'API n'exige ni PIN ni code pour changer l'état (point ouvert n°6) : confirmation explicite obligatoire.
+  /// L'API n'exige ni PIN ni code pour changer l'état (point ouvert n°6) : confirmation explicite, puis
+  /// déverrouillage du téléphone (empreinte, visage ou code) s'il est configuré.
   Future<void> _changeStatus(CardStatusChange change, CardStatus current) async {
     if (_busy) return;
     final twoSteps = change == CardStatusChange.lost && current == CardStatus.inactive;
@@ -88,6 +100,13 @@ class _CardScreenState extends ConsumerState<CardScreen> {
       color: change.color,
     );
     if (!ok || !mounted) return;
+    // L'API n'exige ni PIN ni code (point ouvert n° 6) : déverrouillage du téléphone demandé.
+    final auth = await ref.read(deviceAuthProvider).confirm(change.deviceAuthReason);
+    if (!mounted) return;
+    if (auth == DeviceAuthResult.refused) {
+      showToast(context, deviceAuthRefusedMessage);
+      return;
+    }
     setState(() => _busy = true);
     final actions = ref.read(cardStatusActionsProvider);
     try {

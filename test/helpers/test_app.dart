@@ -10,6 +10,7 @@ import 'package:konekt/core/domain/session.dart';
 import 'package:konekt/core/network/dio_client.dart';
 import 'package:konekt/core/network/fake/fake_api.dart';
 import 'package:konekt/core/network/fake/fake_db.dart';
+import 'package:konekt/core/security/device_auth.dart';
 import 'package:konekt/core/storage/app_prefs.dart';
 import 'package:konekt/core/storage/secure_store.dart';
 import 'package:konekt/design_system/theme/app_theme.dart';
@@ -52,10 +53,14 @@ class TestEnv {
   final InMemorySecureStore store;
   final AppPrefs prefs;
 
+  /// Déverrouillage du téléphone : indisponible par défaut (pas de plugin natif en test).
+  DeviceAuth deviceAuth = const _NoDeviceAuth();
+
   List<Override> get overrides => [
     fakeApiProvider.overrideWithValue(api),
     secureStoreProvider.overrideWithValue(store),
     appPrefsProvider.overrideWithValue(prefs),
+    deviceAuthProvider.overrideWithValue(deviceAuth),
   ];
 
   ProviderContainer container() => ProviderContainer(overrides: overrides);
@@ -90,4 +95,11 @@ class TestEnv {
     );
     await tester.pump();
   }
+}
+
+class _NoDeviceAuth implements DeviceAuth {
+  const _NoDeviceAuth();
+
+  @override
+  Future<DeviceAuthResult> confirm(String reason) async => DeviceAuthResult.unavailable;
 }

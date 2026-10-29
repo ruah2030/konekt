@@ -49,3 +49,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Thème AppCompat requis par local_auth (fenêtre biométrique) sur Android ≤ 8.
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}
