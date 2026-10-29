@@ -67,7 +67,7 @@ class KonektColors extends ThemeExtension<KonektColors> {
   'send' || 'payout' || 'transfer' => (bg: KColors.primaryContainer, fg: KColors.primary),
   'plus' || 'topup' => (bg: KColors.successContainer, fg: KColors.success),
   'phone' || 'airtime' || 'data' => (bg: KColors.infoContainer, fg: KColors.tertiary),
-  'bolt' || 'elec' => (bg: KColors.secondaryContainer, fg: const Color(0xFFB87A0E)),
+  'bolt' || 'elec' || 'elecBill' => (bg: KColors.secondaryContainer, fg: const Color(0xFFB87A0E)),
   'cash' => (bg: KColors.warningContainer, fg: const Color(0xFFEA580C)),
   _ => (bg: const Color(0xFFF1F5F9), fg: const Color(0xFF334155)),
 };

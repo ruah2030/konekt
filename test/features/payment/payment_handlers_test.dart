@@ -270,11 +270,11 @@ void main() {
       final unknown = await c.get('/catalog/lookup/mobile/0196660000/products');
       expect(unknown.status, 500);
       final invoices = await c.get('/catalog/lookup/electricity/610201551642KA/invoices');
-      expect((invoices.json['data'] as Map)['invoices'], hasLength(2));
+      expect((invoices.json['data'] as Map)['invoices'], hasLength(3));
       final tv = await c.get('/catalog/lookup/tv/24100027499297/current');
       expect((tv.json['data'] as Map)['mainOfferLabel'], 'ACCESS');
       final offers = await c.get('/catalog/lookup/tv/24100027499297/offers');
-      expect(((offers.json['data'] as Map)['offersList'] as List).length, 2);
+      expect(((offers.json['data'] as Map)['offersList'] as List).length, 3);
     });
 
     test('devis établi (forfait) puis relecture', () async {

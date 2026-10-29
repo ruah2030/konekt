@@ -328,3 +328,99 @@ class PaymentRequest {
   /// Code d'accès du retrait au guichet choisi par le porteur (non transmis au bénéficiaire).
   final String? accessCode;
 }
+
+/// Abonnement TV en cours (`GET /catalog/lookup/tv/:numCard/current`) : bouquet et prix de reconduction.
+class TvCurrentOffer {
+  const TvCurrentOffer({required this.numCard, required this.amount, required this.mainOfferLabel, this.currency});
+
+  factory TvCurrentOffer.fromJson(Json j) => TvCurrentOffer(
+    numCard: j.str('numCard'),
+    amount: (j['amount'] as num?) ?? 0,
+    currency: j.strOrNull('currency'),
+    mainOfferLabel: j.strOrNull('mainOfferLabel') ?? '',
+  );
+
+  final String numCard;
+
+  /// Prix (indicatif) de la reconduction : le devis fixe le prix réel.
+  final num amount;
+  final String? currency;
+  final String mainOfferLabel;
+}
+
+/// Durée ou option d'un bouquet TV (`durationsList[]`, `optionsList[]`).
+class TvChoice {
+  const TvChoice({required this.code, required this.label, this.amount});
+
+  factory TvChoice.fromJson(Json j) =>
+      TvChoice(code: j.str('code'), label: j.strOrNull('label') ?? j.str('code'), amount: j['amount'] as num?);
+
+  /// Transmis tel que le fournisseur le rend (`input.duration`, `input.optionsList`).
+  final String code;
+  final String label;
+
+  /// Prix indicatif (options).
+  final num? amount;
+}
+
+/// Bouquet TV (`GET /catalog/lookup/tv/:numCard/offers` → `offersList[]`), prix indicatifs.
+class TvOffer {
+  const TvOffer({
+    required this.code,
+    required this.label,
+    required this.amount,
+    this.durations = const [],
+    this.options = const [],
+  });
+
+  factory TvOffer.fromJson(Json j) => TvOffer(
+    code: j.str('code'),
+    label: j.strOrNull('label') ?? j.str('code'),
+    amount: (j['amount'] as num?) ?? 0,
+    durations: j.list('durationsList').map(TvChoice.fromJson).toList(),
+    options: j.list('optionsList').map(TvChoice.fromJson).toList(),
+  );
+
+  /// → `input.mainOffer`.
+  final String code;
+  final String label;
+  final num amount;
+  final List<TvChoice> durations;
+  final List<TvChoice> options;
+}
+
+/// Facture d'électricité impayée (`invoices[]` du lookup SBEE).
+class ElectricityInvoice {
+  const ElectricityInvoice({required this.reference, required this.amount, required this.month, required this.year});
+
+  factory ElectricityInvoice.fromJson(Json j) => ElectricityInvoice(
+    reference: j.str('reference'),
+    amount: (j['amount'] as num?) ?? 0,
+    month: j.strOrNull('month') ?? '',
+    year: j.strOrNull('year') ?? '',
+  );
+
+  /// → `input.invoiceReferences[]`.
+  final String reference;
+  final num amount;
+  final String month;
+  final String year;
+
+  /// « MM/AAAA ».
+  String get period => '$month/$year';
+}
+
+/// Abonné SBEE et factures impayées (`GET /catalog/lookup/electricity/:customerReference/invoices`).
+class ElectricityAccount {
+  const ElectricityAccount({required this.reference, required this.name, this.invoices = const []});
+
+  factory ElectricityAccount.fromJson(Json j) => ElectricityAccount(
+    reference: j.strOrNull('referenceAbonne') ?? '',
+    name: j.strOrNull('name') ?? '',
+    invoices: j.list('invoices').map(ElectricityInvoice.fromJson).toList(),
+  );
+
+  final String reference;
+  final String name;
+  final List<ElectricityInvoice> invoices;
+}

@@ -154,6 +154,7 @@ class ServiceCatalog extends ConsumerWidget {
     (ServiceType.airtime, 'Crédit téléphone', Symbols.smartphone_rounded, 'phone'),
     (ServiceType.data, 'Forfait internet', Symbols.wifi_rounded, 'data'),
     (ServiceType.elec, 'Électricité', Symbols.bolt_rounded, 'bolt'),
+    (ServiceType.elecBill, 'Facture d’électricité', Symbols.receipt_long_rounded, 'elecBill'),
     (ServiceType.cash, 'Retrait guichet', Symbols.payments_rounded, 'cash'),
     (ServiceType.tv, 'Abonnement TV', Symbols.live_tv_rounded, 'card'),
   ];

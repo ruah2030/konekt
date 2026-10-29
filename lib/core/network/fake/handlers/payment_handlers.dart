@@ -14,8 +14,27 @@ import 'account_handlers.dart';
 /// - montant `99999` (transfert, retrait) ou bénéficiaire mobile se terminant par `9999` :
 ///   sort indéterminé (500 « NE LA RELANCEZ PAS ») ;
 /// - compteur se terminant par `9999` : service non rendu, remboursé (500).
+///
+/// Abonnement TV Canal+ (`tv-subscription`, prix imposé) :
+/// - carte TV : 8 à 20 lettres ou chiffres, ex. `24100027499297` (bouquet en cours ACCESS, 5 000 F/mois) ;
+///   se terminant par `1111` → bouquet en cours EVASION ; par `0000` → carte inconnue (lookups en 500,
+///   devis refusé) ; par `9999` → service non rendu, remboursé (500) ;
+/// - bouquets : ACCESS 5 000, EVASION 10 000, TOUT_CANAL 40 000 F/mois ; durées 1, 3 ou 6 mois ;
+///   options mensuelles ENGLISH (English Plus, 5 000 ; ACCESS, EVASION) et CHR (Charme, 3 000 ; EVASION,
+///   TOUT_CANAL). Prix = (bouquet + options) × mois ; reconduction = bouquet en cours, 1 mois.
+///   Un changement de bouquet confirmé devient le bouquet en cours de la carte.
+///
+/// Facture d'électricité SBEE (`electricity-postpaid`, prix imposé = somme des factures choisies) :
+/// - référence client quelconque, ex. `610201551642KA` (KOSSI ADJOVI) : 3 factures impayées
+///   FAC-2026-08-014 (9 800), FAC-2026-09-001 (12 500), FAC-2026-10-007 (11 200) ;
+///   se terminant par `8` → abonnée AFI MENSAH ; par `1111` → aucune facture impayée ;
+///   par `0000` → abonné inconnu (lookup en 500, devis refusé) ;
+/// - les factures réglées disparaissent des impayés de la référence.
 void registerPaymentHandlers(FakeApi api) {
   final db = api.db;
+
+  /// Fournisseurs simulés : bouquets en cours (Canal+) et factures impayées (SBEE).
+  final providers = _Providers();
 
   /// État hors format API, par opération : OTP, attente du payeur, code B-MO, etc.
   final meta = <String, Map<String, dynamic>>{};
@@ -119,6 +138,7 @@ void registerPaymentHandlers(FakeApi api) {
       db.addIssuerTransaction('Rechargement depuis ${m['channelLabel']}', amount);
       addMovement(op['id'] as String, amount, 'CREDIT', 'Recharge de la carte •••• ${db.last4}');
     }
+    providers.delivered(service, m['quote'] as Map<String, dynamic>);
     m['providerReference'] = '${2089700000 + db.now().millisecondsSinceEpoch % 99999}';
     touch(op, 'SUCCESS');
     db.addNotification(
@@ -616,35 +636,36 @@ void registerPaymentHandlers(FakeApi api) {
 
   api.on('GET', '/catalog/lookup/electricity/:ref/invoices', (r) {
     final ref = r.pathParams['ref']!;
-    if (ref.endsWith('0000')) return _providerError();
+    if (providers.subscriberUnknown(ref)) return _providerError();
     return FakeResponse.ok({
       'success': true,
       'data': {
         'referenceAbonne': ref,
-        'name': 'KOSSI ADJOVI',
+        'name': _Providers.subscriberName(ref),
         'invoices': [
-          {'amount': 12500, 'month': '09', 'year': '2026', 'reference': 'FAC-2026-09-001'},
-          {'amount': 9800, 'month': '08', 'year': '2026', 'reference': 'FAC-2026-08-014'},
+          for (final i in providers.invoicesOf(ref))
+            {'amount': i['amount'], 'month': i['month'], 'year': i['year'], 'reference': i['reference']},
         ],
       },
     });
   });
 
   api.on('GET', '/catalog/lookup/tv/:numCard/current', (r) {
-    final num = r.pathParams['numCard']!;
-    if (!RegExp(r'^[A-Za-z0-9]{8,20}$').hasMatch(num) || num.endsWith('0000')) return _providerError();
+    final numCard = r.pathParams['numCard']!;
+    if (_Providers.tvUnknown(numCard)) return _providerError();
+    final offer = _tvOffer(providers.tvOfferOf(numCard))!;
     return FakeResponse.ok({
       'success': true,
-      'data': {'numCard': num, 'amount': 5000, 'currency': 'XOF', 'mainOfferLabel': 'ACCESS'},
+      'data': {'numCard': numCard, 'amount': offer['amount'], 'currency': 'XOF', 'mainOfferLabel': offer['code']},
     });
   });
 
   api.on('GET', '/catalog/lookup/tv/:numCard/offers', (r) {
-    final num = r.pathParams['numCard']!;
-    if (!RegExp(r'^[A-Za-z0-9]{8,20}$').hasMatch(num) || num.endsWith('0000')) return _providerError();
+    final numCard = r.pathParams['numCard']!;
+    if (_Providers.tvUnknown(numCard)) return _providerError();
     return FakeResponse.ok({
       'success': true,
-      'data': {'numCard': num, 'offersList': _tvOffers},
+      'data': {'numCard': numCard, 'offersList': _tvOffers},
     });
   });
 
@@ -728,7 +749,7 @@ void registerPaymentHandlers(FakeApi api) {
     }
     quoteTimes.add(now);
 
-    final q = _buildQuote(db, service, f, inp, root: b['amount']);
+    final q = _buildQuote(db, providers, service, f, inp, root: b['amount']);
     q
       ..['quoteId'] = db.id('clq')
       ..['service'] = service
@@ -967,12 +988,15 @@ void registerPaymentHandlers(FakeApi api) {
 
     // 12. Exécution du service.
     final inp = q['input'] as Map<String, dynamic>;
-    if (service == 'electricity-prepaid' && '${inp['meterNum']}'.endsWith('9999')) {
+    if ((service == 'electricity-prepaid' && '${inp['meterNum']}'.endsWith('9999')) ||
+        (service == 'tv-subscription' && '${inp['numCard']}'.endsWith('9999'))) {
       db.balance += debited;
       db.addIssuerTransaction('Remboursement ${_labels[service]}', debited);
       addMovement(id, debited, 'CREDIT', 'Restitution — service non rendu');
       touch(op, 'REFUNDED');
-      op['failureReason'] = 'Le fournisseur n’a pas délivré le jeton. Vous avez été remboursé.';
+      op['failureReason'] = service == 'tv-subscription'
+          ? 'Canal+ n’a pas activé l’abonnement. Vous avez été remboursé.'
+          : 'Le fournisseur n’a pas délivré le jeton. Vous avez été remboursé.';
       return FakeResponse.error(
         500,
         'INTERNAL_ERROR',
@@ -1232,32 +1256,86 @@ List<Map<String, dynamic>> _products(String msisdn, String type) {
   };
 }
 
+const _tvDurations = [
+  {'code': '1', 'label': '1 mois'},
+  {'code': '3', 'label': '3 mois'},
+  {'code': '6', 'label': '6 mois'},
+];
+const _optEnglish = {'code': 'ENGLISH', 'label': 'English Plus', 'amount': 5000, 'currency': 'XOF'};
+const _optCharme = {'code': 'CHR', 'label': 'Charme', 'amount': 3000, 'currency': 'XOF'};
+
+/// Bouquets Canal+ (`TvOffersResponseDto.offersList`), prix mensuels indicatifs.
 const _tvOffers = [
   {
     'code': 'ACCESS',
     'label': 'Access',
     'amount': 5000,
     'currency': 'XOF',
-    'durationsList': [
-      {'code': '1', 'label': '1 mois'},
-      {'code': '3', 'label': '3 mois'},
-    ],
-    'optionsList': <Map<String, dynamic>>[],
+    'durationsList': _tvDurations,
+    'optionsList': [_optEnglish],
   },
   {
     'code': 'EVASION',
     'label': 'Évasion',
     'amount': 10000,
     'currency': 'XOF',
-    'durationsList': [
-      {'code': '1', 'label': '1 mois'},
-      {'code': '3', 'label': '3 mois'},
-    ],
-    'optionsList': [
-      {'code': 'CHR', 'label': 'Charme', 'amount': 3000, 'currency': 'XOF'},
-    ],
+    'durationsList': _tvDurations,
+    'optionsList': [_optCharme, _optEnglish],
+  },
+  {
+    'code': 'TOUT_CANAL',
+    'label': 'Tout Canal+',
+    'amount': 40000,
+    'currency': 'XOF',
+    'durationsList': _tvDurations,
+    'optionsList': [_optCharme],
   },
 ];
+
+Map<String, dynamic>? _tvOffer(String? code) =>
+    _tvOffers.where((o) => o['code'] == code?.trim().toUpperCase()).firstOrNull;
+
+/// État des fournisseurs simulés (variables du faux backend, hors `FakeDb`).
+class _Providers {
+  /// Bouquet en cours par carte TV.
+  final _tvCurrent = <String, String>{};
+
+  /// Factures impayées par référence client SBEE.
+  final _unpaid = <String, List<Map<String, dynamic>>>{};
+
+  static bool tvUnknown(String numCard) =>
+      !RegExp(r'^[A-Za-z0-9]{8,20}$').hasMatch(numCard) || numCard.endsWith('0000');
+
+  String tvOfferOf(String numCard) =>
+      _tvCurrent.putIfAbsent(numCard, () => numCard.endsWith('1111') ? 'EVASION' : 'ACCESS');
+
+  bool subscriberUnknown(String ref) => ref.trim().isEmpty || ref.length > 40 || ref.endsWith('0000');
+
+  static String subscriberName(String ref) => ref.endsWith('8') ? 'AFI MENSAH' : 'KOSSI ADJOVI';
+
+  List<Map<String, dynamic>> invoicesOf(String ref) => _unpaid.putIfAbsent(
+    ref,
+    () => ref.endsWith('1111')
+        ? []
+        : [
+            {'amount': 9800, 'month': '08', 'year': '2026', 'reference': 'FAC-2026-08-014'},
+            {'amount': 12500, 'month': '09', 'year': '2026', 'reference': 'FAC-2026-09-001'},
+            {'amount': 11200, 'month': '10', 'year': '2026', 'reference': 'FAC-2026-10-007'},
+          ],
+  );
+
+  /// Service rendu : factures réglées retirées des impayés, nouveau bouquet en cours.
+  void delivered(String service, Map<String, dynamic> quote) {
+    final display = quote['display'] as Map<String, dynamic>? ?? const {};
+    final input = quote['input'] as Map<String, dynamic>;
+    if (service == 'electricity-postpaid') {
+      final paid = {for (final i in (display['invoices'] as List).cast<Map<String, dynamic>>()) i['reference']};
+      invoicesOf('${input['customerReference']}'.trim()).removeWhere((i) => paid.contains(i['reference']));
+    } else if (service == 'tv-subscription' && display['isRenewal'] == false) {
+      _tvCurrent['${input['numCard']}'] = '${input['mainOffer']}'.trim().toUpperCase();
+    }
+  }
+}
 
 const _labels = <String, String>{
   'mobile-topup': 'Recharge téléphonique',
@@ -1312,6 +1390,7 @@ String _pricedSlug(String service, bool byCard) {
 num _internalFee(String service, num amount) => switch (service) {
   'electricity-prepaid' => 125,
   'electricity-postpaid' => 100,
+  'tv-subscription' => 100,
   'cash-withdrawal' => amount * 0.01 < 100 ? 100 : (amount * 0.01).round(),
   'wallet-to-card' => (amount * 0.01).round(),
   'payout-to-external' => (amount * 0.022).round(),
@@ -1352,6 +1431,16 @@ FakeResponse? _inputContract(String service, Map<String, dynamic> input) {
   final errs = <String>[];
   void need(String k) {
     if ('${input[k] ?? ''}'.trim().isEmpty) errs.add('input.$k : ce champ est requis.');
+  }
+
+  void maxString(String k, int max) {
+    final v = input[k];
+    if (v == null) return;
+    if (v is! String) {
+      errs.add('input.$k : $k must be a string');
+    } else if (v.length > max) {
+      errs.add('input.$k : $k must be shorter than or equal to $max characters');
+    }
   }
 
   void amount({bool required = false}) {
@@ -1396,8 +1485,25 @@ FakeResponse? _inputContract(String service, Map<String, dynamic> input) {
       if (!RegExp(r'^[A-Za-z0-9]{8,20}$').hasMatch('${input['numCard'] ?? ''}')) {
         errs.add('input.numCard : numCard : lettres et chiffres uniquement.');
       }
+      maxString('mainOffer', 40);
+      maxString('duration', 20);
+      maxString('optionsList', 200);
     case 'electricity-postpaid':
       need('customerReference');
+      maxString('customerReference', 40);
+      final refs = input['invoiceReferences'];
+      if (refs != null) {
+        if (refs is! List) {
+          errs.add('input.invoiceReferences : invoiceReferences must be an array');
+        } else {
+          if (refs.length > 50) {
+            errs.add('input.invoiceReferences : invoiceReferences must contain no more than 50 elements');
+          }
+          if (refs.any((e) => e is! String)) {
+            errs.add('input.invoiceReferences : each value in invoiceReferences must be a string');
+          }
+        }
+      }
   }
   if (errs.isEmpty) return null;
   return _rejected('Données invalides pour le service « $service » — ${errs.join(' ; ')}');
@@ -1406,6 +1512,7 @@ FakeResponse? _inputContract(String service, Map<String, dynamic> input) {
 /// Calcule un devis (`feasible`, montants, `checks`, `warnings`, `display`).
 Map<String, dynamic> _buildQuote(
   FakeDb db,
+  _Providers providers,
   String service,
   Map<String, dynamic> funding,
   Map<String, dynamic> input, {
@@ -1482,6 +1589,14 @@ Map<String, dynamic> _buildQuote(
   if (root != null && input['amount'] == null) {
     warnings.add('`amount` à la racine est déprécié pour ce service : placez-le dans `input.amount`.');
   }
+
+  /// Service à prix imposé : un montant fourni est ignoré (et retiré de `input`).
+  void imposed() {
+    if (input.remove('amount') != null || root != null) {
+      warnings.add('Montant ignoré : le prix de ce service est fixé par le fournisseur et appliqué d’office.');
+    }
+  }
+
   switch (service) {
     case 'mobile-topup' || 'mobile-data':
       final msisdn = _normalizeMsisdn('${input['beneficiary']}');
@@ -1643,36 +1758,96 @@ Map<String, dynamic> _buildQuote(
         'requiresPayerApproval': true,
       });
     case 'tv-subscription':
-      if ('${input['numCard']}'.endsWith('0000')) {
-        return refuse('Cette carte TV n’a pas pu être vérifiée.', key: 'numCard', label: 'Carte TV');
+      final numCard = '${input['numCard']}';
+      if (_Providers.tvUnknown(numCard)) {
+        return refuse(
+          'Cette carte TV n’a pas pu être vérifiée auprès de Canal+. Contrôlez le numéro et réessayez.',
+          key: 'numCard',
+          label: 'Carte TV',
+          detail: 'Non reconnue par le fournisseur',
+        );
       }
-      final main = input['mainOffer'] as String?;
-      if (main != null && input['duration'] == null) {
+      imposed();
+      final main = '${input['mainOffer'] ?? ''}'.trim();
+      final renewal = main.isEmpty;
+      final duration = '${input['duration'] ?? ''}'.trim();
+      if (!renewal && duration.isEmpty) {
         return refuse('Choisissez une durée pour ce bouquet avant de poursuivre.', key: 'duration', label: 'Durée');
       }
-      final offer = _tvOffers.where((o) => o['code'] == (main ?? 'ACCESS')).firstOrNull;
-      if (offer == null) return refuse('Cette combinaison n’est pas disponible.', key: 'offer', label: 'Offre');
-      final months = int.tryParse('${input['duration'] ?? 1}') ?? 1;
-      amount = (offer['amount']! as num) * months;
+      final offer = _tvOffer(renewal ? providers.tvOfferOf(numCard) : main);
+      if (offer == null) {
+        return refuse('Ce bouquet n’est pas proposé pour cette carte.', key: 'offer', label: 'Bouquet');
+      }
+      final durations = (offer['durationsList']! as List).cast<Map<String, dynamic>>();
+      final available = (offer['optionsList']! as List).cast<Map<String, dynamic>>();
+      final codes = renewal
+          ? const <String>[]
+          : '${input['optionsList'] ?? ''}'.split(',').map((c) => c.trim()).where((c) => c.isNotEmpty).toList();
+      final options = [for (final c in codes) ?available.where((o) => o['code'] == c.toUpperCase()).firstOrNull];
+      if ((!renewal && !durations.any((d) => d['code'] == duration)) || options.length != codes.length) {
+        return refuse(
+          'Cette combinaison bouquet, durée et options n’est pas disponible chez Canal+. Modifiez votre choix.',
+          key: 'offer',
+          label: 'Bouquet',
+        );
+      }
+      final months = renewal ? 1 : int.parse(duration);
+      final monthly = (offer['amount']! as num) + options.fold<num>(0, (t, o) => t + (o['amount'] as num));
+      amount = monthly * months;
+      checks.add({'key': 'numCard', 'label': 'Carte TV', 'passed': true, 'detail': 'Canal+ · $numCard'});
       display.addAll({
-        'numCard': input['numCard'],
+        'numCard': numCard,
         'offerLabel': offer['label'],
         'amount': amount,
         'currency': 'XOF',
-        'isRenewal': main == null,
-        if (main != null) ...{'duration': input['duration'], 'options': input['optionsList'] ?? ''},
+        'isRenewal': renewal,
+        if (!renewal) ...{
+          'duration': durations.firstWhere((d) => d['code'] == duration)['label'],
+          'options': options.map((o) => o['label']).join(', '),
+        },
       });
     case 'electricity-postpaid':
-      amount = 22300;
+      final ref = '${input['customerReference']}'.trim();
+      if (providers.subscriberUnknown(ref)) {
+        return refuse(
+          'Abonné introuvable chez la SBEE. Vérifiez la référence client et réessayez.',
+          key: 'customerReference',
+          label: 'Abonné',
+          detail: 'Non reconnu par le fournisseur',
+        );
+      }
+      imposed();
+      final unpaid = providers.invoicesOf(ref);
+      if (unpaid.isEmpty) {
+        return refuse(
+          'Aucune facture impayée pour cet abonné : il n’y a rien à régler.',
+          key: 'invoices',
+          label: 'Factures',
+        );
+      }
+      final wanted = ((input['invoiceReferences'] as List?) ?? const []).cast<String>().map((e) => e.trim()).toSet();
+      final missing = wanted.where((w) => !unpaid.any((i) => i['reference'] == w)).toList();
+      if (missing.isNotEmpty) {
+        return refuse(
+          'Facture(s) déjà réglée(s) ou introuvable(s) : ${missing.join(', ')}. Actualisez la liste des factures.',
+          key: 'invoices',
+          label: 'Factures',
+        );
+      }
+      final selected = wanted.isEmpty ? unpaid : unpaid.where((i) => wanted.contains(i['reference'])).toList();
+      num sum(Iterable<Map<String, dynamic>> l) => l.fold<num>(0, (t, i) => t + (i['amount'] as num));
+      amount = sum(selected);
+      final name = _Providers.subscriberName(ref);
+      checks.add({'key': 'customerReference', 'label': 'Abonné', 'passed': true, 'detail': '$name · $ref'});
       display.addAll({
-        'customerName': 'KOSSI ADJOVI',
-        'customerReference': input['customerReference'],
+        'customerName': name,
+        'customerReference': ref,
         'invoices': [
-          {'reference': 'FAC-2026-09-001', 'amount': 12500, 'period': '09/2026'},
-          {'reference': 'FAC-2026-08-014', 'amount': 9800, 'period': '08/2026'},
+          for (final i in selected)
+            {'reference': i['reference'], 'amount': i['amount'], 'period': '${i['month']}/${i['year']}'},
         ],
-        'totalDue': 22300,
-        'remainingUnpaid': 0,
+        'totalDue': amount,
+        'remainingUnpaid': sum(unpaid) - amount,
       });
     default:
       if (amount == null) return refuse('Indiquez le montant de l’opération (input.amount).', key: 'amount');
@@ -1739,6 +1914,15 @@ List<Map<String, dynamic>> _parties(FakeDb db, String service, Map<String, dynam
         'channelLabel': 'Retrait au guichet',
         'verified': false,
       },
+    if (service == 'electricity-postpaid')
+      {
+        'role': 'BENEFICIARY',
+        'name': display['customerName'],
+        'identifier': display['customerReference'],
+        'channelSlug': 'sbee',
+        'channelLabel': 'SBEE',
+        'verified': true,
+      },
     if (service == 'tv-subscription')
       {
         'role': 'BENEFICIARY',
@@ -1758,7 +1942,8 @@ String _issuerLabel(String service, Map<String, dynamic> q) {
     'mobile-data' => 'Paiement Forfait internet ${display['productName']}',
     'electricity-prepaid' => 'SBEE Électricité prépayée',
     'cash-withdrawal' => 'Retrait au guichet',
-    'tv-subscription' => 'Canal+ Abonnement',
+    'electricity-postpaid' => 'SBEE Facture ${display['customerReference']}',
+    'tv-subscription' => 'Canal+ ${display['offerLabel']}',
     _ => _labels[service] ?? service,
   };
 }
@@ -1767,6 +1952,8 @@ String _successTitle(String service) => switch (service) {
   'wallet-to-card' => 'Carte rechargée',
   'cash-withdrawal' => 'Code de retrait envoyé',
   'electricity-prepaid' => 'Jeton d’électricité envoyé',
+  'electricity-postpaid' => 'Facture d’électricité réglée',
+  'tv-subscription' => 'Abonnement Canal+ activé',
   _ => 'Paiement effectué',
 };
 
@@ -1780,6 +1967,13 @@ String _successMessage(String service, Map<String, dynamic> op, Map<String, dyna
     'electricity-prepaid' => 'Le jeton de $amount pour le compteur ${display['meterNum']} a été envoyé.',
     'mobile-data' => '${display['productName']} activé pour ${display['beneficiary']}.',
     'mobile-topup' => '$amount de crédit envoyés au ${display['beneficiary']}.',
+    'electricity-postpaid' =>
+      '${(display['invoices'] as List).length} facture(s) SBEE réglée(s) pour la référence '
+          '${display['customerReference']} : $amount.',
+    'tv-subscription' =>
+      display['isRenewal'] == true
+          ? 'Votre abonnement ${display['offerLabel']} (carte ${display['numCard']}) est renouvelé : $amount.'
+          : 'Bouquet ${display['offerLabel']} activé pour ${display['duration']} sur la carte ${display['numCard']} : $amount.',
     _ => '${_labels[service]} : $amount.',
   };
 }

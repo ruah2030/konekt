@@ -73,35 +73,162 @@ final recentTransactionsProvider = FutureProvider<List<CardTransaction>>((ref) a
   return all.take(4).toList();
 });
 
-final notificationsProvider = AsyncNotifierProvider<NotificationsController, List<AppNotification>>(
+/// Boîte de messages paginée (`GET /notifications`, `limit` [NotificationsController.pageSize]).
+final notificationsProvider = AsyncNotifierProvider<NotificationsController, NotificationsState>(
   NotificationsController.new,
 );
 
-class NotificationsController extends AsyncNotifier<List<AppNotification>> {
+/// Messages chargés + pagination + filtre « Non lues ». [unreadCount] vient de la réponse
+/// (`unreadCount`, indépendant des filtres) : c'est la pastille.
+class NotificationsState {
+  const NotificationsState({
+    this.items = const [],
+    this.nextCursor,
+    this.unreadCount = 0,
+    this.unreadOnly = false,
+    this.loadingMore = false,
+    this.loadMoreError,
+  });
+
+  final List<AppNotification> items;
+
+  /// Page suivante ; null = tout est chargé.
+  final String? nextCursor;
+  final int unreadCount;
+  final bool unreadOnly;
+  final bool loadingMore;
+  final Object? loadMoreError;
+
+  bool get hasMore => nextCursor != null;
+
+  NotificationsState copyWith({
+    List<AppNotification>? items,
+    int? unreadCount,
+    bool? loadingMore,
+    Object? loadMoreError,
+    bool clearError = false,
+  }) => NotificationsState(
+    items: items ?? this.items,
+    nextCursor: nextCursor,
+    unreadCount: unreadCount ?? this.unreadCount,
+    unreadOnly: unreadOnly,
+    loadingMore: loadingMore ?? this.loadingMore,
+    loadMoreError: clearError ? null : (loadMoreError ?? this.loadMoreError),
+  );
+}
+
+class NotificationsController extends AsyncNotifier<NotificationsState> {
+  static const pageSize = 20;
+
+  bool _unreadOnly = false;
+
+  /// Filtre « Non lues » demandé (y compris pendant le chargement de la première page).
+  bool get unreadOnly => _unreadOnly;
+
   @override
-  Future<List<AppNotification>> build() async {
+  Future<NotificationsState> build() async {
     watchSession(ref);
-    return (await ref.watch(accountRepositoryProvider).notifications(limit: 50)).items;
+    return _firstPage();
+  }
+
+  Future<NotificationsState> _firstPage() async {
+    final page = await ref.read(accountRepositoryProvider).notifications(limit: pageSize, unreadOnly: _unreadOnly);
+    return NotificationsState(
+      items: page.items,
+      nextCursor: page.nextCursor,
+      unreadCount: page.unreadCount,
+      unreadOnly: _unreadOnly,
+    );
+  }
+
+  /// Filtre « Non lues » (`unreadOnly`) : recharge la première page.
+  Future<void> setUnreadOnly(bool value) async {
+    if (value == _unreadOnly && state.hasValue) return;
+    _unreadOnly = value;
+    state = const AsyncLoading<NotificationsState>();
+    state = await AsyncValue.guard(_firstPage);
+  }
+
+  /// Page suivante (défilement ou « Voir plus »).
+  Future<void> loadMore() async {
+    final current = state.value;
+    if (current == null || !current.hasMore || current.loadingMore || state.isLoading) return;
+    state = AsyncData(current.copyWith(loadingMore: true, clearError: true));
+    try {
+      final page = await ref
+          .read(accountRepositoryProvider)
+          .notifications(cursor: current.nextCursor, limit: pageSize, unreadOnly: current.unreadOnly);
+      final latest = state.value ?? current;
+      // Un message rangé entre-temps décale les pages : on ignore les doublons.
+      final known = {for (final n in latest.items) n.id};
+      state = AsyncData(
+        NotificationsState(
+          items: [...latest.items, ...page.items.where((n) => !known.contains(n.id))],
+          nextCursor: page.nextCursor,
+          unreadCount: page.unreadCount,
+          unreadOnly: current.unreadOnly,
+        ),
+      );
+    } catch (e) {
+      final latest = state.value ?? current;
+      state = AsyncData(latest.copyWith(loadingMore: false, loadMoreError: e));
+    }
   }
 
   Future<void> markRead(String id) async {
-    final list = state.value ?? const [];
-    state = AsyncData([for (final n in list) n.id == id ? n.markRead() : n]);
+    final current = state.value;
+    if (current != null) {
+      final wasUnread = current.items.any((n) => n.id == id && !n.read);
+      state = AsyncData(
+        current.copyWith(
+          items: [for (final n in current.items) n.id == id ? n.markRead() : n],
+          unreadCount: wasUnread && current.unreadCount > 0 ? current.unreadCount - 1 : current.unreadCount,
+        ),
+      );
+    }
     await ref.read(accountRepositoryProvider).markNotificationRead(id);
     ref.invalidate(unreadCountProvider);
   }
 
   Future<void> markAllRead() async {
-    final list = state.value ?? const [];
-    state = AsyncData([for (final n in list) n.markRead()]);
+    final current = state.value;
+    if (current != null) {
+      state = AsyncData(current.copyWith(items: [for (final n in current.items) n.markRead()], unreadCount: 0));
+    }
     await ref.read(accountRepositoryProvider).markAllNotificationsRead();
     ref.invalidate(unreadCountProvider);
   }
 
+  /// Range un message (`DELETE /notifications/:id`) : retiré tout de suite de la liste, remis en cas d'échec.
+  Future<void> archive(String id) async {
+    final current = state.value;
+    final index = current?.items.indexWhere((n) => n.id == id) ?? -1;
+    if (current != null && index >= 0) {
+      final removed = current.items[index];
+      state = AsyncData(
+        current.copyWith(
+          items: [...current.items]..removeAt(index),
+          unreadCount: !removed.read && current.unreadCount > 0 ? current.unreadCount - 1 : current.unreadCount,
+        ),
+      );
+    }
+    try {
+      await ref.read(accountRepositoryProvider).archiveNotification(id);
+    } catch (_) {
+      final latest = state.value;
+      if (current != null && index >= 0 && latest != null) {
+        final items = [...latest.items]..insert(index.clamp(0, latest.items.length), current.items[index]);
+        state = AsyncData(latest.copyWith(items: items, unreadCount: current.unreadCount));
+      }
+      rethrow;
+    } finally {
+      ref.invalidate(unreadCountProvider);
+    }
+  }
+
+  /// Pull-to-refresh : recharge la première page (filtre conservé).
   Future<void> refresh() async {
-    state = await AsyncValue.guard(
-      () async => (await ref.read(accountRepositoryProvider).notifications(limit: 50)).items,
-    );
+    state = await AsyncValue.guard(_firstPage);
     ref.invalidate(unreadCountProvider);
   }
 }

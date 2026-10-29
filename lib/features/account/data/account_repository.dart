@@ -7,6 +7,7 @@ import '../../../core/domain/json.dart';
 import '../../../core/domain/operation.dart';
 import '../../../core/domain/promotion.dart';
 import '../../../core/domain/transaction.dart';
+import '../../../core/network/api_failure.dart';
 import '../../../core/network/dio_client.dart';
 
 /// Page de résultats. [nextCursor] = numéro de la page suivante (pagination `page`/`limit` de l'API).
@@ -133,10 +134,35 @@ class AccountRepository {
     return CardTransaction.listFromIssuer(j.list('transactions'));
   }
 
-  /// `GET /operations` (pagination par numéro de page, `limit` ≤ 100).
-  Future<Page<Operation>> operations({required String cardCustomerId, String? cursor, int limit = 20}) async {
+  /// `GET /operations` (pagination par numéro de page, `limit` ≤ 100). Ne jamais envoyer `merchantId`.
+  ///
+  /// Filtres facultatifs (Partie 6 §1.1) : [status] (`OperationStatus`, une seule valeur), [operationType],
+  /// [startDate]/[endDate] (jours inclus, envoyés en `AAAA-MM-JJ`) et [search] (référence, clé ou id).
+  /// [startDate] postérieure à [endDate] → [ApiFailure] locale, sans appel réseau.
+  Future<Page<Operation>> operations({
+    required String cardCustomerId,
+    String? cursor,
+    int limit = 20,
+    String? status,
+    String? operationType,
+    DateTime? startDate,
+    DateTime? endDate,
+    String? search,
+  }) async {
+    if (startDate != null && endDate != null && _day(startDate).isAfter(_day(endDate))) {
+      throw ApiFailure.local(ErrorCodes.validationFailed, 'La date de début doit précéder la date de fin.');
+    }
     final page = int.tryParse(cursor ?? '1') ?? 1;
-    final j = await _get('/operations', {'page': page, 'limit': limit});
+    final q = search?.trim();
+    final j = await _get('/operations', {
+      'page': page,
+      'limit': limit.clamp(1, 100),
+      'status': ?status,
+      'operationType': ?operationType,
+      if (startDate != null) 'startDate': ymd(startDate),
+      if (endDate != null) 'endDate': ymd(endDate),
+      if (q != null && q.isNotEmpty) 'search': q,
+    });
     final pagination = j['pagination'] is Map ? j.obj('pagination') : const <String, dynamic>{};
     return Page(
       j.list('data').map((o) => Operation.fromJson(o, sessionCardCustomerId: cardCustomerId)).toList(),
@@ -145,14 +171,34 @@ class AccountRepository {
     );
   }
 
+  static DateTime _day(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  /// Date au format `AAAA-MM-JJ` attendu par les filtres de période.
+  static String ymd(DateTime x) =>
+      '${x.year.toString().padLeft(4, '0')}-${x.month.toString().padLeft(2, '0')}-${x.day.toString().padLeft(2, '0')}';
+
   /// `GET /operations/:id` (avec devis et mouvements).
   Future<Operation> operation(String id, {required String cardCustomerId}) async =>
       Operation.fromJson((await _get('/operations/$id')).obj('data'), sessionCardCustomerId: cardCustomerId);
 
-  /// `GET /notifications` (`limit` ≤ 50, sinon 400).
-  Future<NotificationsPage> notifications({String? cursor, int limit = 20}) async {
+  /// `GET /notifications` (`limit` ≤ 50, sinon 400). [unreadOnly] : non lus seulement ; [kind] :
+  /// `NotificationKind` de l'API (`INFO`, `FINANCIAL`…) ; [includeArchived] : messages rangés inclus.
+  /// `unreadCount` de la réponse est la pastille (indépendant des filtres).
+  Future<NotificationsPage> notifications({
+    String? cursor,
+    int limit = 20,
+    bool unreadOnly = false,
+    String? kind,
+    bool includeArchived = false,
+  }) async {
     final page = int.tryParse(cursor ?? '1') ?? 1;
-    final j = await _get('/notifications', {'page': page, 'limit': limit.clamp(1, 50)});
+    final j = await _get('/notifications', {
+      'page': page,
+      'limit': limit.clamp(1, 50),
+      if (unreadOnly) 'unreadOnly': 'true',
+      'kind': ?kind,
+      if (includeArchived) 'includeArchived': 'true',
+    });
     final pagination = j['pagination'] is Map ? j.obj('pagination') : const <String, dynamic>{};
     return NotificationsPage(
       j.list('data').map(AppNotification.fromJson).toList(),

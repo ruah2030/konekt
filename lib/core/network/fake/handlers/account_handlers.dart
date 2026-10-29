@@ -71,6 +71,40 @@ FakeResponse? _limitError(Map<String, dynamic> query, int max) {
   return null;
 }
 
+/// `OperationStatus` / `OperationType` (guide Partie 6 §7.1, §7.2) : filtres de `GET /operations`.
+const _operationStatuses = [
+  'INITIALIZED',
+  'PENDING',
+  'PENDING_APPROVAL',
+  'PROCESSING',
+  'SUCCESS',
+  'FAILED',
+  'CANCELLED',
+  'REVERSED',
+  'REFUNDED',
+  'EXPIRED',
+];
+const _operationTypes = [
+  'CARD_OPERATION',
+  'WALLET_OPERATION',
+  'ADDON_SALE',
+  'CASH_WITHDRAWAL',
+  'REFUND',
+  'BANK_TRANSFER',
+  'CARD_STOCK_OPERATION',
+  'COMMISSION_PAYOUT',
+];
+
+/// Filtre de date de `GET /operations` (`@IsDateString`) : `AAAA-MM-JJ` (début du jour, jour réel exigé)
+/// ou date-heure ISO 8601. Null si invalide.
+DateTime? _parseOperationDay(String s) {
+  final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(s);
+  if (m == null) return RegExp(r'^\d{4}-\d{2}-\d{2}T').hasMatch(s) ? DateTime.tryParse(s)?.toLocal() : null;
+  final y = int.parse(m[1]!), mo = int.parse(m[2]!), d = int.parse(m[3]!);
+  final day = DateTime(y, mo, d);
+  return day.year == y && day.month == mo && day.day == d ? day : null;
+}
+
 /// Lectures partagées : carte, solde, relevé, opérations, notifications, statut, catalogue.
 void registerAccountHandlers(FakeApi api) {
   final db = api.db;
@@ -134,10 +168,49 @@ void registerAccountHandlers(FakeApi api) {
     final bad = _limitError(r.query, 100);
     if (bad != null) return bad;
     final status = r.query['status'] as String?;
+    if (status != null && !_operationStatuses.contains(status)) {
+      return FakeResponse.validation({
+        'status': ['status must be one of the following values: ${_operationStatuses.join(', ')}'],
+      });
+    }
+    final type = r.query['operationType'] as String?;
+    if (type != null && !_operationTypes.contains(type)) {
+      return FakeResponse.validation({
+        'operationType': ['operationType must be one of the following values: ${_operationTypes.join(', ')}'],
+      });
+    }
+    // `startDate` : `createdAt >= début du jour` ; `endDate` : `createdAt <= fin du jour` (@IsDateString).
+    final dates = <String, DateTime>{};
+    for (final key in const ['startDate', 'endDate']) {
+      final v = r.query[key];
+      if (v == null) continue;
+      final d = _parseOperationDay('$v');
+      if (d == null) {
+        return FakeResponse.validation({
+          key: ['$key must be a valid ISO 8601 date string'],
+        });
+      }
+      dates[key] = d;
+    }
+    final start = dates['startDate'];
+    final endDay = dates['endDate'];
+    // Hypothèse du faux backend (le guide ne précise pas ce cas pour /operations) : même refus que le relevé.
+    if (start != null && endDay != null && start.isAfter(endDay)) {
+      return FakeResponse.error(400, 'REQUEST_REJECTED', 'La date de début doit précéder la date de fin.');
+    }
+    final dateOnlyEnd = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch('${r.query['endDate']}');
+    final end = endDay == null ? null : (dateOnlyEnd ? endDay.add(const Duration(days: 1)) : endDay);
     // `search` : `reference` ou `idempotencyKey` contient (insensible à la casse), ou `id` exact (§1.1).
     final search = (r.query['search'] as String?)?.toLowerCase();
     final list = db.operations
         .where((o) => status == null || o['status'] == status)
+        .where((o) => type == null || o['type'] == type)
+        .where((o) {
+          if (start == null && end == null) return true;
+          final created = DateTime.parse('${o['createdAt']}').toLocal();
+          return (start == null || !created.isBefore(start)) &&
+              (end == null || (dateOnlyEnd ? created.isBefore(end) : !created.isAfter(end)));
+        })
         .where(
           (o) =>
               search == null ||
@@ -146,7 +219,8 @@ void registerAccountHandlers(FakeApi api) {
               '${o['idempotencyKey'] ?? ''}'.toLowerCase().contains(search),
         )
         .toList();
-    return FakeResponse.ok({'success': true, ...pageOf(list, r.query), 'stats': _stats(db.operations)});
+    // Les `stats` portent sur tous les filtres actifs (pas sur la page).
+    return FakeResponse.ok({'success': true, ...pageOf(list, r.query), 'stats': _stats(list)});
   });
 
   api.on('GET', '/operations/:id', (r) {
@@ -167,9 +241,17 @@ void registerAccountHandlers(FakeApi api) {
     if (bad != null) return bad;
     final includeArchived = '${r.query['includeArchived']}' == 'true';
     final unreadOnly = '${r.query['unreadOnly']}' == 'true';
+    final kind = r.query['kind'] as String?;
+    const kinds = ['INFO', 'SUCCESS', 'WARNING', 'ERROR', 'FINANCIAL', 'SECURITY'];
+    if (kind != null && !kinds.contains(kind)) {
+      return FakeResponse.validation({
+        'kind': ['kind must be one of the following values: ${kinds.join(', ')}'],
+      });
+    }
     final list = db.notifications
         .where((n) => includeArchived || n['archivedAt'] == null)
         .where((n) => !unreadOnly || n['readAt'] == null)
+        .where((n) => kind == null || n['kind'] == kind)
         .toList();
     return FakeResponse.ok({'success': true, ...pageOf(list, r.query, maxLimit: 50), 'unreadCount': unread()});
   });
@@ -250,8 +332,6 @@ void registerAccountHandlers(FakeApi api) {
           s,
           unavailable: db.incident && s.$1 == 'electricity-prepaid'
               ? 'Momentanément indisponible — nos équipes travaillent au rétablissement.'
-              : s.$1 == 'tv-subscription'
-              ? 'En maintenance.'
               : null,
         ),
     ];
@@ -311,6 +391,16 @@ const _catalog = <(String, String, String, String?, String, List<String>, num, n
     ['CUSTOMER_CARD', 'CUSTOMER_EXTERNAL_CHANNEL'],
     1000,
     500000,
+  ),
+  (
+    'electricity-postpaid',
+    'Facture d’électricité',
+    'CATALOG',
+    'ENERGY',
+    'IMPOSED',
+    ['CUSTOMER_CARD', 'CUSTOMER_EXTERNAL_CHANNEL'],
+    1000,
+    10000000,
   ),
   (
     'tv-subscription',

@@ -15,6 +15,7 @@ IconData kindIcon(String kind) => switch (kind) {
   'phone' || 'airtime' => Symbols.smartphone_rounded,
   'data' => Symbols.wifi_rounded,
   'bolt' || 'elec' => Symbols.bolt_rounded,
+  'elecBill' => Symbols.receipt_long_rounded,
   'tv' => Symbols.live_tv_rounded,
   'cash' => Symbols.payments_rounded,
   _ => Symbols.credit_card_rounded,

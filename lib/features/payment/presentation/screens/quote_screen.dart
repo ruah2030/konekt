@@ -232,8 +232,41 @@ class _QuoteScreenState extends ConsumerState<QuoteScreen> {
         InfoRow('Frais', fee()),
         pays,
       ],
-      ServiceType.tv => [InfoRow('Montant', formatFcfa(q.amount)), InfoRow('Frais', fee()), pays],
+      ServiceType.tv => [
+        if (d['numCard'] != null) InfoRow('Carte TV', '${d['numCard']}', key: const Key('quote-target')),
+        if (d['offerLabel'] != null)
+          InfoRow(
+            d['isRenewal'] == false ? 'Nouveau bouquet' : 'Reconduction',
+            '${d['offerLabel']}',
+            key: const Key('quote-offer'),
+          ),
+        if (d['isRenewal'] == false && d['duration'] != null) InfoRow('Durée', _durationLabel(d['duration'])),
+        if (_text(d['options']).isNotEmpty) InfoRow('Options', _text(d['options'])),
+        InfoRow('Prix Canal+', formatFcfa(q.amount)),
+        InfoRow('Frais', fee()),
+        pays,
+      ],
+      ServiceType.elecBill => [
+        if (d['customerName'] != null) InfoRow('Abonné', '${d['customerName']}', key: const Key('quote-target')),
+        if (d['customerReference'] != null) InfoRow('Référence client', '${d['customerReference']}'),
+        for (final i in (d['invoices'] is List ? d['invoices'] as List : const []).whereType<Map<Object?, Object?>>())
+          InfoRow('Facture ${i['period'] ?? ''}', formatFcfa((i['amount'] as num?) ?? 0)),
+        InfoRow('Total des factures', formatFcfa((d['totalDue'] as num?) ?? q.amount), key: const Key('quote-due')),
+        if (((d['remainingUnpaid'] as num?) ?? 0) > 0)
+          InfoRow('Restera impayé', formatFcfa(d['remainingUnpaid'] as num), key: const Key('quote-remaining')),
+        InfoRow('Frais', fee()),
+        pays,
+      ],
     };
+  }
+
+  /// Texte d'un champ `display` rendu en chaîne ou en liste.
+  static String _text(Object? v) => v is List ? v.join(', ') : (v ?? '').toString();
+
+  /// Durée d'un changement de bouquet : libellé du fournisseur, ou nombre de mois.
+  static String _durationLabel(Object? v) {
+    final s = _text(v);
+    return RegExp(r'^\d+$').hasMatch(s) ? '$s mois' : s;
   }
 
   static String _hhmm(DateTime d) {

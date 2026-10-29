@@ -4,7 +4,22 @@ import '../../../core/utils/validators.dart';
 import 'payment_models.dart';
 
 /// Type de saisie d'un champ de formulaire de service.
-enum FieldKind { amount, cardId, tel, digits, text, contact, accessCode, choice }
+enum FieldKind {
+  amount,
+  cardId,
+  tel,
+  digits,
+  text,
+  contact,
+  accessCode,
+  choice,
+
+  /// Numéro de carte TV : 8 à 20 lettres ou chiffres.
+  tvCard,
+
+  /// Référence client (40 caractères au plus).
+  reference,
+}
 
 /// Origine des choix d'un champ [FieldKind.choice].
 enum ChoiceSource { fixed, wallets, products }
@@ -254,11 +269,34 @@ const serviceConfigs = <ServiceType, ServiceConfig>{
       ),
     ],
   ),
+  ServiceType.elecBill: ServiceConfig(
+    type: ServiceType.elecBill,
+    path: PaymentPath.catalogCard,
+    intro: 'Réglez vos factures SBEE impayées. Le montant est celui des factures choisies.',
+    fields: [
+      ServiceField(
+        'customerReference',
+        'Référence client SBEE',
+        'Ex. 610201551642KA',
+        FieldKind.reference,
+        checkKeys: {'customerReference'},
+      ),
+    ],
+  ),
   ServiceType.tv: ServiceConfig(
     type: ServiceType.tv,
     path: PaymentPath.catalogCard,
-    intro: 'Le réabonnement Canal+ arrive bientôt dans Konekt.',
-    comingSoon: true,
+    intro: 'Renouvelez votre abonnement Canal+ ou changez de bouquet. Le prix est fixé par Canal+.',
+    fields: [
+      ServiceField(
+        'numCard',
+        'Numéro de carte TV',
+        'Ex. 24100027499297',
+        FieldKind.tvCard,
+        checkKeys: {'numCard'},
+        hint: 'Au dos de votre carte Canal+ ou dans le menu de votre décodeur.',
+      ),
+    ],
   ),
   ServiceType.cash: ServiceConfig(
     type: ServiceType.cash,
@@ -337,6 +375,12 @@ String toInternational(String input) {
   return v;
 }
 
+/// Saisie compactée (espaces retirés) : numéro de carte TV, référence client.
+String compactCode(String input) => input.replaceAll(RegExp(r'[\s  ]'), '');
+
+/// Numéro de carte TV valide (`numCard` : 8 à 20 lettres ou chiffres).
+bool isTvCard(String input) => RegExp(r'^[A-Za-z0-9]{8,20}$').hasMatch(compactCode(input));
+
 final _email = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
 
 /// Validations locales (confort). Renvoie les messages par champ ; vide si tout est valide.
@@ -395,9 +439,17 @@ Map<String, String> validateForm(
         } else if (amount > (catalog ? 1000000 : 10000000)) {
           errors[f.key] = 'Montant maximum : ${formatFcfa(catalog ? 1000000 : 10000000)}.';
         }
+      case FieldKind.tvCard:
+        if (!isTvCard(v)) errors[f.key] = 'Lettres et chiffres uniquement, 8 à 20 caractères.';
+      case FieldKind.reference:
+        if (v.length > 40) errors[f.key] = '40 caractères au maximum.';
       case FieldKind.text || FieldKind.choice:
         if (v.length > 80) errors[f.key] = '80 caractères au maximum.';
     }
+  }
+  if (config.type == ServiceType.tv && (values['mainOffer'] ?? '').trim().isNotEmpty) {
+    // Changement de bouquet : la durée est obligatoire (guide Partie 5 §2.2).
+    if ((values['duration'] ?? '').trim().isEmpty) errors['duration'] = 'Choisissez une durée pour ce bouquet.';
   }
   return errors;
 }
@@ -502,6 +554,25 @@ PaymentRequest buildRequest(
         },
       );
     case ServiceType.tv:
-      throw UnsupportedError('Abonnement TV : bientôt disponible.');
+      // Sans `mainOffer` : reconduction de l'offre en cours ; avec : changement de bouquet (durée obligatoire).
+      final main = v('mainOffer');
+      return PaymentRequest(
+        service: config.type,
+        path: config.path,
+        funding: card,
+        input: {
+          'numCard': compactCode(v('numCard')),
+          if (main.isNotEmpty) ...{'mainOffer': main, 'duration': v('duration'), 'optionsList': v('optionsList')},
+        },
+      );
+    case ServiceType.elecBill:
+      // Sans `invoiceReferences` : toutes les factures impayées sont réglées.
+      final refs = v('invoiceReferences').split(',').map((r) => r.trim()).where((r) => r.isNotEmpty).toList();
+      return PaymentRequest(
+        service: config.type,
+        path: config.path,
+        funding: card,
+        input: {'customerReference': v('customerReference'), if (refs.isNotEmpty) 'invoiceReferences': refs},
+      );
   }
 }

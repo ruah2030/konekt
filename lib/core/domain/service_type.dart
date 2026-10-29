@@ -9,6 +9,7 @@ enum ServiceType {
   airtime('airtime', 'Crédit téléphone', 'mobile-topup'),
   data('data', 'Forfait internet', 'mobile-data'),
   elec('elec', 'Électricité prépayée', 'electricity-prepaid'),
+  elecBill('elecBill', 'Facture d’électricité', 'electricity-postpaid'),
   tv('tv', 'Abonnement TV', 'tv-subscription'),
   cash('cash', 'Retrait au guichet', 'cash-withdrawal');
 
@@ -39,6 +40,7 @@ enum ServiceType {
     if (k.contains('wallet-to-card')) return topup;
     if (k.contains('airtime') || k.contains('mobile-topup')) return airtime;
     if (k.contains('mno-data') || k.contains('mobile-data')) return data;
+    if (k.contains('electricity-postpaid')) return elecBill;
     if (k.contains('electricity')) return elec;
     if (k.contains('tv')) return tv;
     if (k.contains('atm') || k.contains('cash')) return cash;

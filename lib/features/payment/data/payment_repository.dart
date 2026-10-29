@@ -35,6 +35,23 @@ class PaymentRepository {
     return j.list('data').map(MobileProduct.fromJson).toList();
   }
 
+  /// `GET /catalog/lookup/electricity/:customerReference/invoices` : abonné SBEE et factures impayées.
+  /// Abonné inconnu ou fournisseur injoignable : 500 (guide Partie 5 §3.5).
+  Future<ElectricityAccount> electricityInvoices(String customerReference) async {
+    final j = await _get('/catalog/lookup/electricity/${Uri.encodeComponent(customerReference)}/invoices');
+    return ElectricityAccount.fromJson(j.obj('data'));
+  }
+
+  /// `GET /catalog/lookup/tv/:numCard/current` : bouquet en cours et prix de reconduction.
+  Future<TvCurrentOffer> tvCurrent(String numCard) async =>
+      TvCurrentOffer.fromJson((await _get('/catalog/lookup/tv/${Uri.encodeComponent(numCard)}/current')).obj('data'));
+
+  /// `GET /catalog/lookup/tv/:numCard/offers` : bouquets, durées et options (prix indicatifs).
+  Future<List<TvOffer>> tvOffers(String numCard) async {
+    final j = await _get('/catalog/lookup/tv/${Uri.encodeComponent(numCard)}/offers');
+    return j.obj('data').list('offersList').map(TvOffer.fromJson).toList();
+  }
+
   /// `POST /catalog/quote`. Un refus est un 200 avec `feasible:false` (à tester).
   Future<PaymentQuote> catalogQuote(PaymentRequest r) async {
     final j = await _post('/catalog/quote', {'service': r.service.apiKey, 'funding': r.funding, 'input': r.input});

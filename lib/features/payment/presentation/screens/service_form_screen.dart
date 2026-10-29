@@ -19,17 +19,33 @@ import '../../domain/payment_models.dart';
 import '../../domain/service_config.dart';
 import '../providers/payment_flow.dart';
 
-/// Formulaire générique d'un service, piloté par [ServiceConfig] : saisie, choix du portefeuille
-/// ou de l'offre (lookup opérateur), validations locales puis devis.
-class ServiceFormScreen extends ConsumerStatefulWidget {
+part 'lookup_service_forms.dart';
+
+/// Formulaire d'un service. L'abonnement TV et la facture d'électricité passent par une consultation
+/// du fournisseur avant le devis (formulaires dédiés) ; les autres services par [_GenericServiceForm].
+class ServiceFormScreen extends StatelessWidget {
   const ServiceFormScreen({required this.type, super.key});
   final ServiceType type;
 
   @override
-  ConsumerState<ServiceFormScreen> createState() => _ServiceFormScreenState();
+  Widget build(BuildContext context) => switch (type) {
+    ServiceType.tv => const _TvSubscriptionForm(),
+    ServiceType.elecBill => const _ElectricityBillForm(),
+    _ => _GenericServiceForm(type: type),
+  };
 }
 
-class _ServiceFormScreenState extends ConsumerState<ServiceFormScreen> {
+/// Formulaire générique d'un service, piloté par [ServiceConfig] : saisie, choix du portefeuille
+/// ou de l'offre (lookup opérateur), validations locales puis devis.
+class _GenericServiceForm extends ConsumerStatefulWidget {
+  const _GenericServiceForm({required this.type});
+  final ServiceType type;
+
+  @override
+  ConsumerState<_GenericServiceForm> createState() => _GenericServiceFormState();
+}
+
+class _GenericServiceFormState extends ConsumerState<_GenericServiceForm> {
   late final ServiceConfig _config = serviceConfig(widget.type);
   late final Map<String, TextEditingController> _controllers = {
     for (final f in _config.fields)
@@ -453,11 +469,18 @@ class _FieldInput extends StatelessWidget {
             FieldKind.tel => TextInputType.phone,
             FieldKind.contact => TextInputType.emailAddress,
             FieldKind.text || FieldKind.choice => TextInputType.name,
+            FieldKind.tvCard || FieldKind.reference => TextInputType.visiblePassword,
           },
+          autocorrect: field.kind != FieldKind.tvCard && field.kind != FieldKind.reference,
+          textCapitalization: field.kind == FieldKind.tvCard || field.kind == FieldKind.reference
+              ? TextCapitalization.characters
+              : TextCapitalization.none,
           inputFormatters: [
             if (field.kind == FieldKind.amount) FilteringTextInputFormatter.allow(RegExp(r'[\d\s,.]')),
             if (field.kind == FieldKind.digits || field.kind == FieldKind.cardId)
               FilteringTextInputFormatter.allow(RegExp(r'[\dOo\s]')),
+            if (field.kind == FieldKind.tvCard) FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9\s]')),
+            if (field.kind == FieldKind.reference) LengthLimitingTextInputFormatter(40),
             if (field.kind == FieldKind.accessCode) ...[
               FilteringTextInputFormatter.digitsOnly,
               LengthLimitingTextInputFormatter(4),

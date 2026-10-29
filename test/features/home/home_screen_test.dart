@@ -92,17 +92,13 @@ void main() {
 
     expect(find.text('Payer et recharger'), findsOneWidget);
     expect(find.text('Bientôt'), findsNothing);
-    // La TV suit le catalogue (« En maintenance » dans le faux backend) : grisée, pas masquée.
+    // Tous les services du catalogue sont disponibles (TV et facture d'électricité comprises).
     expect(find.byKey(const Key('catalog-tv')), findsOneWidget);
-    expect(find.text('Indisponible'), findsOneWidget);
+    expect(find.byKey(const Key('catalog-elecBill')), findsOneWidget);
+    expect(find.text('Indisponible'), findsNothing);
     await tester.tap(find.byKey(const Key('catalog-tv')));
-    await settle(tester, 2);
-    expect(find.text('En maintenance.'), findsOneWidget);
-
-    // Service disponible : le parcours s'ouvre.
-    await tester.tap(find.byKey(const Key('catalog-airtime')));
     await settle(tester);
-    expect(find.text('Service airtime'), findsOneWidget);
+    expect(find.text('Service tv'), findsOneWidget);
   });
 
   testWidgets('derniers mouvements avec signe déduit du solde courant', (tester) async {
