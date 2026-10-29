@@ -11,6 +11,10 @@ import '../../../core/storage/app_prefs.dart';
 import '../../auth/presentation/providers/auth_controller.dart';
 import '../data/account_repository.dart';
 
+/// Rattache un provider à la session : il est recalculé (et ses données d'une autre session oubliées)
+/// à chaque connexion, déconnexion ou changement de carte.
+void watchSession(Ref ref) => ref.watch(cardSessionProvider.select((s) => s?.cardCustomerId));
+
 /// Identifiant de la carte de session (exception si non connecté).
 String requireCardId(Ref ref) {
   final s = ref.watch(cardSessionProvider);
@@ -75,8 +79,10 @@ final notificationsProvider = AsyncNotifierProvider<NotificationsController, Lis
 
 class NotificationsController extends AsyncNotifier<List<AppNotification>> {
   @override
-  Future<List<AppNotification>> build() async =>
-      (await ref.watch(accountRepositoryProvider).notifications(limit: 50)).items;
+  Future<List<AppNotification>> build() async {
+    watchSession(ref);
+    return (await ref.watch(accountRepositoryProvider).notifications(limit: 50)).items;
+  }
 
   Future<void> markRead(String id) async {
     final list = state.value ?? const [];
@@ -103,6 +109,7 @@ class NotificationsController extends AsyncNotifier<List<AppNotification>> {
 /// Pastille de notifications : `GET /notifications/unread-count`, rafraîchie toutes les minutes
 /// (le push n'est pas encore branché côté API).
 final unreadCountProvider = FutureProvider<int>((ref) async {
+  watchSession(ref);
   final timer = Timer(const Duration(minutes: 1), ref.invalidateSelf);
   ref.onDispose(timer.cancel);
   try {
@@ -115,6 +122,7 @@ final unreadCountProvider = FutureProvider<int>((ref) async {
 /// Publicités d'un emplacement, triées par priorité, sans celles masquées.
 /// ⚠️ Hors API CardConnect v2 : en cas d'erreur (route absente), aucune publicité.
 final promotionsProvider = FutureProvider.family<List<Promotion>, PromoPlacement>((ref, placement) async {
+  watchSession(ref);
   final dismissed = ref.watch(dismissedPromosProvider);
   try {
     final items = await ref.watch(accountRepositoryProvider).promotions(placement);
@@ -147,24 +155,13 @@ final platformStatusProvider = FutureProvider<PlatformStatus?>((ref) async {
 /// Services ouverts/grisés pour ce porteur (`GET /catalog/services`). À recharger à l'ouverture
 /// de chaque parcours. Erreur → liste vide (aucune tuile grisée par défaut).
 final serviceOffersProvider = FutureProvider<List<ServiceOffer>>((ref) async {
+  watchSession(ref);
   try {
     return await ref.watch(accountRepositoryProvider).services();
   } catch (_) {
     return const [];
   }
 });
-
-/// Vide les caches liés à la session (déconnexion / changement de carte).
-void resetAccountState(Ref ref) {
-  ref
-    ..invalidate(cardProvider)
-    ..invalidate(balanceProvider)
-    ..invalidate(recentTransactionsProvider)
-    ..invalidate(notificationsProvider)
-    ..invalidate(unreadCountProvider)
-    ..invalidate(serviceOffersProvider)
-    ..invalidate(promotionsProvider);
-}
 
 /// Rafraîchit ce qui dépend d'une opération (solde, mouvements, notifications, carte).
 void refreshAccountFromWidget(WidgetRef ref) {

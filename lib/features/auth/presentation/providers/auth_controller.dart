@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/domain/session.dart';
 import '../../../../core/network/dio_client.dart';
 import '../../../../core/storage/secure_store.dart';
-import '../../../account/presentation/account_providers.dart';
 import '../../data/auth_repository.dart';
 import '../../domain/auth_models.dart';
 
@@ -52,7 +51,6 @@ class AuthController extends Notifier<AuthState> {
   /// Après `login/confirm`.
   void signedIn(CardSession session) {
     ref.read(loginChallengeProvider.notifier).clear();
-    resetAccountState(ref);
     state = AuthState.authenticated(session);
   }
 
@@ -88,7 +86,8 @@ class AuthController extends Notifier<AuthState> {
     // Les jetons locaux sont toujours effacés : un `restore()` ultérieur ne doit pas rouvrir la session.
     unawaited(ref.read(secureStoreProvider).clear());
     ref.read(loginChallengeProvider.notifier).clear();
-    resetAccountState(ref);
+    // Les données de compte dépendent de la session (account_providers.dart) : elles se réinitialisent
+    // d'elles-mêmes. Ne pas les invalider d'ici (dépendance circulaire refusée par Riverpod).
     state = const AuthState.unauthenticated();
   }
 }
