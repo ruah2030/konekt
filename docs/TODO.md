@@ -11,6 +11,9 @@ Découpage par lots, dans l'ordre conseillé. `[x]` = implémenté et testé con
 - [ ] Suivre les points ouverts côté API (guide Partie 9), notamment : idempotence partagée entre porteurs, `PATCH /cards/status` sans PIN, plafond d'affichage par marchand, push non implémenté
 - [ ] Vérifier côté API `CARD_DISPLAY_PAGE_URL` (doit inclure `/api/v1/card-display` et viser l'environnement courant)
 - [ ] Créer le projet Firebase (Android + iOS) pour les notifications push (dès que l'API les envoie)
+- [x] Liens d'invitation `konekt://invite?code=…` et `https://konekt.app/invite?code=…` → `merchantReferralCode` (package `app_links`)
+- [ ] Publier `assetlinks.json` (empreinte SHA-256 du certificat Play) et `apple-app-site-association` sur `konekt.app` ; activer *Associated Domains* sur l'App ID iOS
+- [ ] Optionnel — code d'invitation via le Play Install Referrer (installation depuis le Play Store, l'app n'étant pas encore installée quand on clique le lien) : ajouter un plugin natif (ex. `play_install_referrer` / `android_play_install_referrer`), lire une seule fois au premier lancement le paramètre `referrer` d'un lien du type `https://play.google.com/store/apps/details?id=bj.bestcash.konekt&referrer=code%3DREF-XYZ123`, le décoder (`Uri.splitQueryString(referrer)['code']`) puis le passer à `InviteLinkService` (même validation, sans écraser un code déjà saisi). Vérifier ses règles R8. iOS n'a pas d'équivalent (lien différé via un service tiers ou presse-papier)
 
 ## Lot 1 — Socle technique
 

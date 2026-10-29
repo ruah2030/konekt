@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../design_system/theme/app_theme.dart';
+import '../features/onboarding/presentation/widgets/invite_link_listener.dart';
 import 'router/app_router.dart';
 
 class KonektApp extends ConsumerWidget {
@@ -21,6 +22,8 @@ class KonektApp extends ConsumerWidget {
       locale: const Locale('fr'),
       supportedLocales: const [Locale('fr')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      // Liens d'invitation (konekt://invite?code=…, https://konekt.app/invite?code=…).
+      builder: (context, child) => InviteLinkListener(child: child ?? const SizedBox.shrink()),
     );
   }
 }

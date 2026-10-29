@@ -26,6 +26,24 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Liens d'invitation, lus par le plugin app_links (lib/features/onboarding/data/invite_link_service.dart).
+                 Le routage profond intégré de Flutter est désactivé : un lien ne doit pas changer d'écran. -->
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
+            <!-- konekt://invite?code=REF-XYZ123 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="konekt" android:host="invite" />
+            </intent-filter>
+            <!-- https://konekt.app/invite?code=REF-XYZ123 (App Link vérifié : exige
+                 https://konekt.app/.well-known/assetlinks.json avec l'empreinte SHA-256 du certificat de signature). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="konekt.app" android:path="/invite" />
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

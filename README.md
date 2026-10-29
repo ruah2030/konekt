@@ -31,6 +31,25 @@ conservés entre deux lancements ; le solde et l'historique repartent de zéro �
 Le faux backend suit le contrat de l'API CardConnect v2 ([`docs/GUIDE-INTEGRATION-KONEKT.md`](docs/GUIDE-INTEGRATION-KONEKT.md)).
 Pour brancher la vraie API : `USE_FAKE_API=false`, `API_BASE_URL` (hôte, sans `/api/v1`) et `KONEKT_APP_ID` (fourni par l'équipe backend).
 
+## Liens d'invitation
+
+Un lien d'invitation ouvre l'app et enregistre le code marchand (envoyé à `login/confirm` comme
+`merchantReferralCode`) : `konekt://invite?code=REF-XYZ123` ou `https://konekt.app/invite?code=REF-XYZ123`.
+Au premier lancement, l'écran d'invitation s'affiche pré-rempli ; app déjà ouverte : toast « Code d'invitation
+enregistré » ; personne connectée : le code est gardé pour la prochaine connexion (logique :
+`lib/features/onboarding/data/invite_link_service.dart`).
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "konekt://invite?code=REF-XYZ123"
+adb shell am start -a android.intent.action.VIEW -d "https://konekt.app/invite?code=REF-XYZ123"
+xcrun simctl openurl booted "konekt://invite?code=REF-XYZ123"
+```
+
+Les liens `https` n'ouvrent l'app (sans passer par le navigateur) qu'une fois le domaine vérifié : publier
+`https://konekt.app/.well-known/assetlinks.json` (package `bj.bestcash.konekt` + empreinte SHA-256 du certificat de
+signature Play) et `https://konekt.app/.well-known/apple-app-site-association` (`applinks`, `TEAMID.bj.bestcash.konekt`,
+chemin `/invite`), et activer la capacité *Associated Domains* sur l'App ID iOS (`ios/Runner/Runner.entitlements`).
+
 ## Icône et écran de démarrage
 
 Sources dans `assets/branding/` (générées à partir des logos de `assets/images/`). Après modification :

@@ -10,6 +10,7 @@ import 'package:video_player/video_player.dart';
 import '../../../../app/router/routes.dart';
 import '../../../../core/storage/app_prefs.dart';
 import '../../../../design_system/design_system.dart';
+import '../../data/invite_link_service.dart';
 import '../providers/invite_controller.dart';
 
 /// Normalise la saisie : majuscules, lettres, chiffres, `-` et `_`, 40 caractères au plus.
@@ -30,6 +31,11 @@ class InviteScreen extends ConsumerStatefulWidget {
 
   static const acceptedDelay = Duration(milliseconds: 1500);
 
+  static int _visible = 0;
+
+  /// L'écran est affiché (un code reçu par lien s'y affiche, sans toast).
+  static bool get isShowing => _visible > 0;
+
   @override
   ConsumerState<InviteScreen> createState() => _InviteScreenState();
 }
@@ -41,11 +47,16 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
   @override
   void initState() {
     super.initState();
+    InviteScreen._visible++;
     _code.addListener(() => setState(() {}));
+    // Code reçu par le lien qui a lancé l'app (ou pendant le splash).
+    final received = ref.read(inviteLinkProvider);
+    if (received != null) Future.microtask(() => _acceptFromLink(received.code));
   }
 
   @override
   void dispose() {
+    InviteScreen._visible--;
     _leaveTimer?.cancel();
     _code.dispose();
     super.dispose();
@@ -55,6 +66,18 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
     FocusScope.of(context).unfocus();
     final ok = await ref.read(inviteControllerProvider.notifier).submit(_code.text);
     if (!ok || !mounted) return;
+    _leaveTimer = Timer(InviteScreen.acceptedDelay, () {
+      if (mounted) context.go(Routes.login);
+    });
+  }
+
+  /// Code lu depuis un lien d'invitation : champ pré-rempli et état « enregistré », puis connexion.
+  Future<void> _acceptFromLink(String code) async {
+    if (!mounted) return;
+    final ok = await ref.read(inviteControllerProvider.notifier).acceptFromLink(code);
+    if (!ok || !mounted) return;
+    _code.text = code;
+    _leaveTimer?.cancel();
     _leaveTimer = Timer(InviteScreen.acceptedDelay, () {
       if (mounted) context.go(Routes.login);
     });
@@ -71,6 +94,9 @@ class _InviteScreenState extends ConsumerState<InviteScreen> {
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(inviteControllerProvider);
+    ref.listen<ReceivedInviteCode?>(inviteLinkProvider, (_, next) {
+      if (next != null) _acceptFromLink(next.code);
+    });
     final complete = _code.text.length >= InviteController.minLength;
     final t = Theme.of(context).textTheme;
     final borderColor = s.error != null
