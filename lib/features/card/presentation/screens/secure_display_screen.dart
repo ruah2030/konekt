@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -26,14 +28,21 @@ class SecureDisplayScreen extends ConsumerStatefulWidget {
 class _SecureDisplayScreenState extends ConsumerState<SecureDisplayScreen> {
   static const _background = Color(0xFF0B0838);
 
+  StreamSubscription<void>? _screenshots;
+
   @override
   void initState() {
     super.initState();
     _protect(on: true);
+    // iOS ne peut pas interdire la capture : on avertit dès qu'elle a lieu.
+    _screenshots = ScreenSecurity.screenshots.listen((_) {
+      if (mounted) showToast(context, SecureDisplayScreenWarning.text);
+    });
   }
 
   @override
   void dispose() {
+    _screenshots?.cancel();
     _protect(on: false);
     super.dispose();
   }
@@ -327,4 +336,10 @@ class _Blocked extends StatelessWidget {
       ),
     ],
   );
+}
+
+/// Avertissement affiché quand une capture d'écran est prise sur l'affichage de carte (iOS).
+abstract final class SecureDisplayScreenWarning {
+  static const text =
+      'Capture d’écran détectée : ne partagez jamais les données de votre carte, en particulier le CVV.';
 }
